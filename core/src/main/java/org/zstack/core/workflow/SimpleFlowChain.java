@@ -1,13 +1,18 @@
 package org.zstack.core.workflow;
 
+import javassist.ClassPool;
+import javassist.CtClass;
+import javassist.CtMethod;
+import javassist.NotFoundException;
+import org.apache.commons.lang.StringUtils;
 import org.springframework.beans.factory.annotation.Autowire;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Configurable;
 import org.zstack.core.CoreGlobalProperty;
 import org.zstack.core.errorcode.ErrorFacade;
 import org.zstack.header.core.workflow.*;
-import org.zstack.header.errorcode.OperationFailureException;
 import org.zstack.header.errorcode.ErrorCode;
+import org.zstack.header.errorcode.OperationFailureException;
 import org.zstack.header.exception.CloudRuntimeException;
 import org.zstack.utils.CollectionUtils;
 import org.zstack.utils.DebugUtils;
@@ -26,7 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * To change this template use File | Settings | File Templates.
  */
 @Configurable(preConstruction = true, autowire = Autowire.BY_TYPE)
-public class SimpleFlowChain implements FlowTrigger, FlowChain {
+public class SimpleFlowChain implements FlowTrigger, FlowRollback, FlowChain, FlowChainMutable {
     private static final CLogger logger = Utils.getLogger(SimpleFlowChain.class);
 
     private List<Flow> flows = new ArrayList<Flow>();
@@ -40,10 +45,14 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
     private ErrorCode errorCode;
     private FlowErrorHandler errorHandler;
     private FlowDoneHandler doneHandler;
+    private FlowFinallyHandler finallyHandler;
     private String name;
     private boolean skipRestRollbacks;
     private boolean allowEmptyFlow;
     private FlowMarshaller flowMarshaller;
+    private List<FlowChainProcessor> processers;
+
+    private boolean isFailCalled;
 
     private static final Map<String, WorkFlowStatistic> statistics = new ConcurrentHashMap<String, WorkFlowStatistic>();
 
@@ -56,6 +65,8 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
                 long stime = beginTime.get(cname);
                 WorkFlowStatistic stat = statistics.get(cname);
                 stat.addStatistic(btime - stime);
+
+                logger.debug(String.format("[FlowChain:%s, flow:%s] takes %sms to complete", name, cname, stat.getTotalTime()));
             }
 
             String fname = getFlowName(flow);
@@ -103,6 +114,61 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
     }
 
     @Override
+    public void setFlows(List<Flow> flows) {
+        this.flows = flows;
+    }
+
+    @Override
+    public FlowDoneHandler getFlowDoneHandler() {
+        return doneHandler;
+    }
+
+    @Override
+    public void setFlowDoneHandler(FlowDoneHandler handler) {
+        done(handler);
+    }
+
+    @Override
+    public FlowErrorHandler getFlowErrorHandler() {
+        return errorHandler;
+    }
+
+    @Override
+    public void setFlowErrorHandler(FlowErrorHandler handler) {
+        error(handler);
+    }
+
+    @Override
+    public FlowFinallyHandler getFlowFinallyHandler() {
+        return finallyHandler;
+    }
+
+    @Override
+    public void setFlowFinallyHandler(FlowFinallyHandler handler) {
+        Finally(handler);
+    }
+
+    @Override
+    public String getChainName() {
+        return name;
+    }
+
+    @Override
+    public void setChainName(String name) {
+        setName(name);
+    }
+
+    @Override
+    public Map getChainData() {
+        return data;
+    }
+
+    @Override
+    public void setChainData(Map data) {
+        setData(data);
+    }
+
+    @Override
     public FlowChain insert(Flow flow) {
         flows.add(0, flow);
         return this;
@@ -132,6 +198,12 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
     }
 
     @Override
+    public FlowChain Finally(FlowFinallyHandler handler) {
+        finallyHandler = handler;
+        return this;
+    }
+
+    @Override
     public FlowChain setData(Map data) {
         this.data = data;
         return  this;
@@ -141,6 +213,11 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
     public FlowChain setName(String name) {
         this.name = name;
         return this;
+    }
+
+    @Override
+    public void setProcessors(List<FlowChainProcessor> processors) {
+        this.processers = processors;
     }
 
     @Override
@@ -181,20 +258,14 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
         } catch (OperationFailureException oe) {
             String errInfo = oe.getErrorCode() != null ? oe.getErrorCode().toString() : "";
             logger.warn(errInfo, oe);
-            setErrorCode(oe.getErrorCode());
-            rollBackFlows.push(currentFlow);
-            rollback();
+            fail(oe.getErrorCode());
         } catch (FlowException fe) {
             String errInfo = fe.getErrorCode() != null ? fe.getErrorCode().toString() : "";
             logger.warn(errInfo, fe);
-            setErrorCode(fe.getErrorCode());
-            rollBackFlows.push(currentFlow);
-            rollback();
+            fail(fe.getErrorCode());
         } catch (Throwable t) {
             logger.warn(String.format("[FlowChain: %s] unhandled exception when executing flow[%s], start to rollback", name, flow.getClass().getName()), t);
-            setErrorCode(errf.throwableToInternalError(t));
-            rollBackFlows.push(currentFlow);
-            rollback();
+            fail(errf.throwableToInternalError(t));
         }
     }
 
@@ -209,33 +280,66 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
     }
 
     private void callErrorHandler(boolean info) {
-        try {
-            if (info) {
-                logger.debug(String.format("[FlowChain: %s] rolled back all flows because error%s", name, errorCode));
-            }
-            if (errorHandler != null) {
+        if (info) {
+            logger.debug(String.format("[FlowChain: %s] rolled back all flows because error%s", name, errorCode));
+        }
+
+        if (errorHandler != null) {
+            try {
                 errorHandler.handle(errorCode, this.data);
+            } catch (Throwable t) {
+                logger.warn(String.format("unhandled exception when calling %s", errorHandler.getClass()), t);
             }
-        } catch (Throwable t) {
-            logger.warn(String.format("[FlowChain: %s] unhandled exception when calling error handler", name), t);
+        }
+
+        if (finallyHandler != null) {
+            try {
+                finallyHandler.Finally();
+            } catch (Throwable t) {
+                logger.warn(String.format("unhandled exception when calling %s", finallyHandler.getClass()), t);
+            }
         }
     }
 
     private String getFlowName(Flow flow) {
         String name = FieldUtils.getFieldValue("__name__", flow);
-        if (name != null) {
-            return name;
+        if (name == null) {
+            name = flow.getClass().getSimpleName();
+            if (name.equals("")) {
+                name = flow.getClass().getName();
+            }
         }
 
-        name = flow.getClass().getSimpleName();
-        if (name == null || name.equals("")) {
-            name = flow.getClass().getName();
+        if (logger.isTraceEnabled()) {
+            try {
+                ClassPool pool = ClassPool.getDefault();
+                CtClass cc = pool.get(flow.getClass().getName());
+                CtMethod m = cc.getDeclaredMethod("run");
+                int line = m.getMethodInfo().getLineNumber(0);
+
+                String className = flow.getClass().getName();
+                String[] ff = className.split("\\.");
+                String filename = ff[ff.length-1];
+                if (filename.contains("$")) {
+                    int index = filename.indexOf("$");
+                    filename = filename.substring(0, index);
+                }
+
+                name = String.format("%s.java:%s:%s", filename, line, name);
+            } catch (NotFoundException e) {
+                logger.warn(String.format("cannot find the flow[%s] line number, %s", name, e.getMessage()));
+            }
         }
+
         return name;
     }
 
     @Override
     public void rollback() {
+        if (!isFailCalled) {
+            throw new CloudRuntimeException("rollback() cannot be called before fail() is called");
+        }
+
         isRollbackStart = true;
         if (rollBackFlows.empty()) {
             callErrorHandler(true);
@@ -281,18 +385,28 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
             stopWath.stop();
         }
 
-        try {
-            logger.debug(String.format("[FlowChain: %s] successfully completed", name));
-            if (doneHandler != null) {
+        if (doneHandler != null) {
+            try {
                 doneHandler.handle(this.data);
+            } catch (Throwable t) {
+                logger.warn(String.format("unhandled exception when calling %s", doneHandler.getClass()), t);
             }
-        } catch (Throwable t) {
-            logger.warn(String.format("[FlowChain: %s] unhandled exception when calling done handler", name), t);
+        }
+
+        logger.debug(String.format("[FlowChain: %s] successfully completed", name));
+
+        if (finallyHandler != null) {
+            try {
+                finallyHandler.Finally();
+            } catch (Throwable t) {
+                logger.warn(String.format("unhandled exception when calling %s", finallyHandler.getClass()), t);
+            }
         }
     }
 
     @Override
     public void fail(ErrorCode errorCode) {
+        isFailCalled = true;
         setErrorCode(errorCode);
         rollBackFlows.push(currentFlow);
         rollback();
@@ -327,6 +441,12 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
 
     @Override
     public void start() {
+        if (processers != null) {
+            for (FlowChainProcessor p : processers) {
+                p.processFlowChain(this);
+            }
+        }
+
         if (flows.isEmpty() && allowEmptyFlow) {
             callDoneHandler();
             return;
@@ -346,6 +466,17 @@ public class SimpleFlowChain implements FlowTrigger, FlowChain {
         }
 
         logger.debug(String.format("[FlowChain: %s] starts", name));
+
+        if (logger.isTraceEnabled()) {
+            List<String> names = CollectionUtils.transformToList(flows, new Function<String, Flow>() {
+                @Override
+                public String call(Flow arg) {
+                    return String.format("%s[%s]", arg.getClass(), getFlowName(arg));
+                }
+            });
+            logger.trace(String.format("execution path:\n%s", StringUtils.join(names, " -->\n")));
+        }
+
         it = flows.iterator();
         Flow flow = it.next();
         runFlow(flow);

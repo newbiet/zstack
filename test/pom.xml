@@ -7,11 +7,12 @@
     <parent>
         <artifactId>zstack</artifactId>
         <groupId>org.zstack</groupId>
-        <version>0.9.0</version>
+        <version>1.1.0</version>
         <relativePath>..</relativePath>
     </parent>
     <artifactId>test</artifactId>
 
+    <!--
     <repositories>
         <repository>
             <id>repository.jboss.org</id>
@@ -19,6 +20,7 @@
             <url>http://repository.jboss.org/nexus/content/groups/public-jboss/</url>
         </repository>
     </repositories>
+-->
 
     <dependencies>
         <dependency>
@@ -108,6 +110,11 @@
             <version>${project.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.zstack</groupId>
+            <artifactId>sharedMountPointPrimaryStorage</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.jboss.shrinkwrap</groupId>
             <artifactId>shrinkwrap-api</artifactId>
             <version>1.0.0-alpha-12</version>
@@ -172,10 +179,29 @@
             <artifactId>mediator</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.zstack</groupId>
+            <artifactId>flatNetworkProvider</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.zstack</groupId>
+            <artifactId>mevoco</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.tomcat.maven</groupId>
+                <artifactId>tomcat7-maven-plugin</artifactId>
+                <version>2.0</version>
+                <configuration>
+                    <contextReloadable>true</contextReloadable>
+                    <useSeparateTomcatClassLoader>true</useSeparateTomcatClassLoader>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
@@ -183,6 +209,9 @@
                 <configuration>
                     <!--
                     <argLine>-XX:+UseConcMarkSweepGC -Xmx8192m -Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.port=10000 -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.authenticate=false -Djava.rmi.server.hostname=192.168.0.199 -Djava.net.preferIPv4Stack=true</argLine>
+		    <useSystemClassLoader>false</useSystemClassLoader>
+                    <forkCount>0</forkCount>
+		    <useManifestOnlyJar>false</useManifestOnlyJar>
                     -->
                 </configuration>
             </plugin>
@@ -234,7 +263,7 @@
                 <version>2.5</version>
                 <executions>
                     <execution>
-                        <id>copy-resources</id>
+                        <id>copy-conf</id>
                         <!-- here the phase you need -->
                         <phase>validate</phase>
                         <goals>
@@ -242,10 +271,28 @@
                         </goals>
                         <configuration>
                             <outputDirectory>target/test-classes</outputDirectory>
+                            <includeEmptyDirs>true</includeEmptyDirs>
                             <resources>
                                 <resource>
                                     <directory>../conf</directory>
-                                    <filtering>true</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+
+                    <execution>
+                        <id>copy-premium-conf</id>
+                        <!-- here the phase you need -->
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>target/test-classes</outputDirectory>
+                            <includeEmptyDirs>true</includeEmptyDirs>
+                            <resources>
+                                <resource>
+                                    <directory>../premium/conf</directory>
                                 </resource>
                             </resources>
                         </configuration>

@@ -1,11 +1,14 @@
 package org.zstack.core.ansible;
 
+import org.apache.commons.io.FileUtils;
 import org.springframework.beans.factory.annotation.Autowire;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Configurable;
 import org.zstack.core.Platform;
 import org.zstack.core.cloudbus.CloudBus;
 import org.zstack.core.cloudbus.CloudBusCallBack;
+import org.zstack.core.defer.Defer;
+import org.zstack.core.defer.Deferred;
 import org.zstack.header.core.Completion;
 import org.zstack.header.exception.CloudRuntimeException;
 import org.zstack.header.message.MessageReply;
@@ -15,6 +18,8 @@ import org.zstack.utils.logging.CLogger;
 import org.zstack.utils.network.NetworkUtils;
 import org.zstack.utils.path.PathUtil;
 import org.zstack.utils.ssh.Ssh;
+import org.zstack.utils.ssh.SshResult;
+import org.zstack.utils.ssh.SshShell;
 
 import java.io.File;
 import java.io.IOException;
@@ -23,6 +28,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+
+import static org.zstack.utils.CollectionDSL.e;
+import static org.zstack.utils.CollectionDSL.map;
+import static org.zstack.utils.StringDSL.ln;
 
 /**
  */
@@ -52,11 +61,38 @@ public class AnsibleRunner {
     private String privateKey;
     private int sshPort = 22;
     private String playBookName;
+    private String playBookPath;
     private Map<String, Object> arguments = new HashMap<String, Object>();
     private int agentPort;
     private boolean fullDeploy;
     private boolean localPublicKey;
     private boolean runOnLocal;
+    private AnsibleNeedRun ansibleNeedRun;
+    private String ansibleExecutable;
+
+    public String getAnsibleExecutable() {
+        return ansibleExecutable;
+    }
+
+    public void setAnsibleExecutable(String ansibleExecutable) {
+        this.ansibleExecutable = ansibleExecutable;
+    }
+
+    public String getPlayBookPath() {
+        return playBookPath;
+    }
+
+    public void setPlayBookPath(String playBookPath) {
+        this.playBookPath = playBookPath;
+    }
+
+    public AnsibleNeedRun getAnsibleNeedRun() {
+        return ansibleNeedRun;
+    }
+
+    public void setAnsibleNeedRun(AnsibleNeedRun ansibleNeedRun) {
+        this.ansibleNeedRun = ansibleNeedRun;
+    }
 
     public boolean isRunOnLocal() {
         return runOnLocal;
@@ -156,15 +192,61 @@ public class AnsibleRunner {
         if (localPublicKey) {
             ShellUtils.run(String.format("sh %s %s", script, pubKeyFile.getAbsolutePath()));
         } else {
-            Ssh ssh = new Ssh();
-            ssh.setHostname(targetIp).setPassword(password).setPort(sshPort).setPrivateKey(privateKey).setUsername(username);
-            String destName = String.format("/tmp/zstackimportpublickey%s.sh", Platform.getUuid());
-            String destKeyName = String.format("/tmp/zstackpublickey%s", Platform.getUuid());
-            ssh.scp(script, destName)
-                    .scp(pubKeyFile.getAbsolutePath(), destKeyName)
-                    .command(String.format("sh %s %s; rm -f %s ; rm -f %s", destName, destKeyName, destKeyName, destName));
-            ssh.runErrorByExceptionAndClose();
+            setupPublicKeyOnRemote();
         }
+    }
+
+    @Deferred
+    private void setupPublicKeyOnRemote() {
+        String script = ln(
+                "#!/bin/sh",
+                "if [ ! -d ~/.ssh ]; then",
+                "mkdir -p ~/.ssh",
+                "chmod 700 ~/.ssh",
+                "fi",
+                "if [ ! -f ~/.ssh/authorized_keys ]; then",
+                "touch ~/.ssh/authorized_keys",
+                "chmod 600 ~/.ssh/authorized_keys",
+                "fi",
+                "pub_key='{pubkey}'",
+                "grep \"$pub_key\" ~/.ssh/authorized_keys > /dev/null",
+                "if [ $? -eq 1 ]; then",
+                "echo \"$pub_key\" >> ~/.ssh/authorized_keys",
+                "fi",
+                "if [ -x /sbin/restorecon ]; then",
+                "/sbin/restorecon ~/.ssh ~/.ssh/authorized_keys",
+                "fi",
+                "exit 0"
+        ).formatByMap(map(
+                e("pubkey", asf.getPublicKey())
+        ));
+
+        SshShell ssh = new SshShell();
+        ssh.setHostname(targetIp);
+        ssh.setPassword(password);
+        ssh.setPort(sshPort);
+        ssh.setUsername(username);
+
+        if (privateKey != null) {
+            try {
+                final File tempKeyFile = File.createTempFile("zstack", "tmp");
+                FileUtils.writeStringToFile(tempKeyFile, privateKey);
+
+                Defer.defer(new Runnable() {
+                    @Override
+                    public void run() {
+                        //tempKeyFile.delete();
+                    }
+                });
+
+                ssh.setPrivateKeyFile(tempKeyFile.getAbsolutePath());
+            } catch (IOException e) {
+                throw new CloudRuntimeException(e);
+            }
+        }
+
+        SshResult res = ssh.runScript(script);
+        res.raiseExceptionIfFailed();
     }
 
     private void callAnsible(final Completion completion) {
@@ -172,12 +254,20 @@ public class AnsibleRunner {
         msg.setTargetIp(targetIp);
         msg.setPrivateKeyFile(privKeyFile);
         msg.setArguments(arguments);
-        msg.setPlayBookName(playBookName);
+        msg.setAnsibleExecutable(ansibleExecutable);
+
+        if (playBookPath != null) {
+            msg.setPlayBookPath(playBookPath);
+        } else {
+            msg.setPlayBookPath(PathUtil.join(AnsibleConstant.ROOT_DIR, playBookName));
+        }
+
         if (runOnLocal) {
             bus.makeLocalServiceId(msg, AnsibleConstant.SERVICE_ID);
         } else {
             bus.makeTargetServiceIdByResourceUuid(msg, AnsibleConstant.SERVICE_ID, targetIp);
         }
+
         bus.send(msg, new CloudBusCallBack(completion) {
             @Override
             public void run(MessageReply reply) {
@@ -204,8 +294,12 @@ public class AnsibleRunner {
 
     private boolean isNeedRun() {
         if (isFullDeploy()) {
-            logger.debug(String.format("Ansible.fullDeploy is set, run ansible anyway"));
+            logger.debug("Ansible.fullDeploy is set, run ansible anyway");
             return true;
+        }
+
+        if (ansibleNeedRun != null) {
+            return ansibleNeedRun.isRunNeed();
         }
 
         boolean changed = asf.isModuleChanged(playBookName);
@@ -219,7 +313,7 @@ public class AnsibleRunner {
             if (!opened) {
                 logger.debug(String.format("agent port[%s] on target ip[%s] is not opened, run ansible[%s]", agentPort, targetIp, playBookName));
                 return true;
-        }
+            }
 
             if (runChecker()) {
                 return true;
@@ -249,8 +343,9 @@ public class AnsibleRunner {
 
             putArgument("pip_url", String.format("http://%s:8080/zstack/static/pypi/simple", Platform.getManagementServerIp()));
             putArgument("trusted_host", Platform.getManagementServerIp());
+            putArgument("yum_server", String.format("%s:8080", Platform.getManagementServerIp()));
 
-            logger.debug(String.format("starts to run ansbile[%s]", playBookName));
+            logger.debug(String.format("starts to run ansbile[%s]", playBookPath == null ? playBookName : playBookPath));
             new PrepareAnsible().setTargetIp(targetIp).prepare();
             setupPublicKey();
             callAnsible(completion);

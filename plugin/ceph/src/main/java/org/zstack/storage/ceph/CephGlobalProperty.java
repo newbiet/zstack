@@ -12,15 +12,15 @@ public class CephGlobalProperty {
     public static int BACKUP_STORAGE_AGENT_PORT;
     @GlobalProperty(name="Ceph.primaryStorageAgent.port", defaultValue = "7762")
     public static int PRIMARY_STORAGE_AGENT_PORT;
-    @GlobalProperty(name="Ceph.backupStorage.agentPackageName", defaultValue = "cephbackupstorage-0.9.tar.gz")
+    @GlobalProperty(name="Ceph.backupStorage.agentPackageName", defaultValue = "cephbackupstorage-1.1.tar.gz")
     public static String BACKUP_STORAGE_PACKAGE_NAME;
-    @GlobalProperty(name="Ceph.backupStorage.ansiblePlaybook", defaultValue = "cephb.yaml")
+    @GlobalProperty(name="Ceph.backupStorage.ansiblePlaybook", defaultValue = "cephb.py")
     public static String BACKUP_STORAGE_PLAYBOOK_NAME;
     @GlobalProperty(name="Ceph.backupStorage.ansibleModulePath", defaultValue = "ansible/cephb")
     public static String BACKUP_STORAGE_MODULE_PATH;
-    @GlobalProperty(name="Ceph.primaryStorage.agentPackageName", defaultValue = "cephprimarystorage-0.9.tar.gz")
+    @GlobalProperty(name="Ceph.primaryStorage.agentPackageName", defaultValue = "cephprimarystorage-1.1.tar.gz")
     public static String PRIMARY_STORAGE_PACKAGE_NAME;
-    @GlobalProperty(name="Ceph.primaryStorage.ansiblePlaybook", defaultValue = "cephp.yaml")
+    @GlobalProperty(name="Ceph.primaryStorage.ansiblePlaybook", defaultValue = "cephp.py")
     public static String PRIMARY_STORAGE_PLAYBOOK_NAME;
     @GlobalProperty(name="Ceph.primaryStorage.ansibleModulePath", defaultValue = "ansible/cephp")
     public static String PRIMARY_STORAGE_MODULE_PATH;

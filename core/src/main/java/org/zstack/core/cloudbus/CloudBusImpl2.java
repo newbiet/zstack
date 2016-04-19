@@ -2,22 +2,26 @@ package org.zstack.core.cloudbus;
 
 import com.google.gson.*;
 import com.rabbitmq.client.*;
+import com.rabbitmq.client.impl.recovery.AutorecoveringConnection;
+import com.rabbitmq.client.impl.recovery.RecoveryAwareAMQConnection;
 import org.apache.commons.lang.StringUtils;
 import org.mvel2.MVEL;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.zstack.core.Platform;
 import org.zstack.core.componentloader.PluginRegistry;
 import org.zstack.core.errorcode.ErrorFacade;
-import org.zstack.core.thread.ThreadFacadeImpl.TimeoutTaskReceipt;
-import org.zstack.header.apimediator.APIIsReadyToGoReply;
-import org.zstack.header.errorcode.OperationFailureException;
-import org.zstack.header.errorcode.SysErrors;
 import org.zstack.core.jmx.JmxFacade;
 import org.zstack.core.thread.*;
+import org.zstack.core.thread.ThreadFacadeImpl.TimeoutTaskReceipt;
+import org.zstack.core.timeout.ApiTimeoutManager;
 import org.zstack.header.Service;
 import org.zstack.header.apimediator.APIIsReadyToGoMsg;
+import org.zstack.header.apimediator.APIIsReadyToGoReply;
+import org.zstack.header.apimediator.StopRoutingException;
 import org.zstack.header.core.NoErrorCompletion;
 import org.zstack.header.errorcode.ErrorCode;
+import org.zstack.header.errorcode.OperationFailureException;
+import org.zstack.header.errorcode.SysErrors;
 import org.zstack.header.exception.CloudConfigureFailException;
 import org.zstack.header.exception.CloudRuntimeException;
 import org.zstack.header.managementnode.ManagementNodeChangeListener;
@@ -34,6 +38,7 @@ import org.zstack.utils.logging.CLogger;
 import javax.management.MXBean;
 import java.io.IOException;
 import java.io.Serializable;
+import java.lang.reflect.Field;
 import java.lang.reflect.Type;
 import java.sql.Timestamp;
 import java.util.*;
@@ -65,6 +70,8 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
     private JmxFacade jmxf;
     @Autowired
     private EventFacade evtf;
+    @Autowired
+    private ApiTimeoutManager timeoutMgr;
 
     private List<String> serverIps;
     private List<Service> services = new ArrayList<Service>();
@@ -75,15 +82,21 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
     private boolean trackerClose = false;
     private Map<String, MessageStatistic> statistics = new HashMap<String, MessageStatistic>();
 
-    private Map<Class, Map<String, Serializable>> mvelExpressions = Collections.synchronizedMap(new HashMap<Class, Map<String,Serializable>>());
+    private Map<Class, Map<String, Serializable>> mvelExpressions = new ConcurrentHashMap<Class, Map<String, Serializable>>();
     private Map<Class, List<ReplyMessagePreSendingExtensionPoint>> replyMessageMarshaller = new ConcurrentHashMap<Class, List<ReplyMessagePreSendingExtensionPoint>>();
-    private Map<Class, Long> messageTimeout = new ConcurrentHashMap<Class, Long>();
+
+    private Map<Class, List<BeforeDeliveryMessageInterceptor>> beforeDeliveryMessageInterceptors = new HashMap<Class, List<BeforeDeliveryMessageInterceptor>>();
+    private Map<Class, List<BeforeSendMessageInterceptor>> beforeSendMessageInterceptors = new HashMap<Class, List<BeforeSendMessageInterceptor>>();
+    private Map<Class, List<BeforePublishEventInterceptor>> beforeEventPublishInterceptors = new HashMap<Class, List<BeforePublishEventInterceptor>>();
+
+    private List<BeforeDeliveryMessageInterceptor> beforeDeliveryMessageInterceptorsForAll = new ArrayList<BeforeDeliveryMessageInterceptor>();
+    private List<BeforeSendMessageInterceptor> beforeSendMessageInterceptorsForAll = new ArrayList<BeforeSendMessageInterceptor>();
+    private List<BeforePublishEventInterceptor> beforeEventPublishInterceptorsForAll = new ArrayList<BeforePublishEventInterceptor>();
 
     private final String NO_NEED_REPLY_MSG = "noReply";
     private final String CORRELATION_ID = "correlationId";
     private final String REPLY_TO = "replyTo";
     private final String IS_MESSAGE_REPLY = "isReply";
-    private final String TIMEOUT_PROPERTY_PREFIX = "CloudBus.messageTimeout.";
     private final String MESSAGE_META_DATA = "metaData";
     private final long DEFAULT_MESSAGE_TIMEOUT = TimeUnit.MINUTES.toMillis(30);
     private final String DEAD_LETTER = "dead-message";
@@ -134,6 +147,21 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
     private class ChannelPool {
         BlockingQueue<Channel> pool;
 
+        @AsyncThread
+        private void retry(Message msg) {
+            try {
+                TimeUnit.SECONDS.sleep(CloudBusGlobalProperty.RABBITMQ_RETRY_DELAY_ON_RETURN);
+            } catch (InterruptedException e) {
+                logger.warn(e.getMessage(), e);
+            }
+
+            if (msg instanceof Event) {
+                publish((Event) msg);
+            } else {
+                send(msg);
+            }
+        }
+
         ChannelPool(int size, Connection connection) {
             try {
                 pool = new ArrayBlockingQueue<Channel>(size);
@@ -148,6 +176,7 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
                                 if (msg instanceof NeedReplyMessage) {
                                     Envelope e = envelopes.get(msg.getId());
                                     if (e == null) {
+                                        retry(msg);
                                         logger.warn(String.format("unable to deliver the message; the destination service[%s] is dead; please use rabbitmqctl to check if the queue is existing and if there is any consumers on that queue; message dump:\n%s",
                                                 msg.getServiceId(), wire.dumpMessage(msg)));
                                     } else {
@@ -157,8 +186,9 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
                                         e.ack(reply);
                                     }
                                 } else {
-                                    logger.warn(String.format("unable to deliver the message; the destination service[%s] is dead; please use rabbitmqctl to check if the queue is existing and if there is any consumers on that queue; message dump:\n%s",
-                                            msg.getServiceId(), wire.dumpMessage(msg)));
+                                    retry(msg);
+                                    logger.warn(String.format("unable to deliver an event; please use rabbitmqctl to check if the queue is existing and if there is any consumers on that queue; message dump:\n%s",
+                                            wire.dumpMessage(msg)));
                                 }
                             } catch (Throwable t) {
                                 logger.warn("unhandled throwable", t);
@@ -229,7 +259,7 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
         public void construct() {
             try {
                 nrouteChan = conn.createChannel();
-                nrouteChan.queueDeclare(nrouteName, true, false, true, null);
+                nrouteChan.queueDeclare(nrouteName, false, false, true, null);
                 nrouteChan.queueBind(nrouteName, BusExchange.NO_ROUTE.toString(), "");
                 nrouteChan.basicConsume(nrouteName, true, this);
             } catch (IOException e) {
@@ -332,6 +362,7 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
         }
     };
 
+
     private class Wire implements GsonTypeCoder<Message> {
         private List<String> filterMsgNames = new ArrayList<String>();
 
@@ -358,6 +389,89 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
                 }
         }).create();
 
+        private class RecoverableSend {
+            Channel chan;
+            byte[] data;
+            String serviceId;
+            Message msg;
+            BusExchange exchange;
+
+            RecoverableSend(Channel chan, Message msg, String serviceId, BusExchange exchange) throws IOException {
+                data = compressMessageIfNeeded(msg);
+                this.chan = chan;
+                this.serviceId = serviceId;
+                this.msg = msg;
+                this.exchange = exchange;
+            }
+
+            void send() throws IOException {
+                try {
+                    chan.basicPublish(exchange.toString(), serviceId,
+                            true, msg.getAMQPProperties(), data);
+                } catch (ShutdownSignalException e) {
+                    if (!(conn instanceof AutorecoveringConnection) || serverIps.size() <= 1 || !Platform.IS_RUNNING) {
+                        // the connection is not recoverable
+                        throw e;
+                    }
+
+                    logger.warn(String.format("failed to send a message because %s; as the connection is recoverable," +
+                            "we are doing recoverable send right now", e.getMessage()));
+
+                    if (!recoverSend()) {
+                        throw e;
+                    }
+                }
+            }
+
+            private byte[] compressMessageIfNeeded(Message msg) throws IOException {
+                if (!CloudBusGlobalProperty.COMPRESS_NON_API_MESSAGE || msg instanceof APIEvent || msg instanceof APIMessage) {
+                    return gson.toJson(msg, Message.class).getBytes();
+                }
+
+                msg.getAMQPHeaders().put(AMQP_PROPERTY_HEADER__COMPRESSED, "true");
+                return Compresser.deflate(gson.toJson(msg, Message.class).getBytes());
+            }
+
+            private boolean recoverSend() throws IOException {
+                int interval = conn.getHeartbeat() / 2;
+                interval = interval > 0 ? interval : 1;
+                int count = 0;
+
+                // as the connection is lost, there is no need to wait heart beat missing 8 times
+                // so we use reflection to fast the process
+                RecoveryAwareAMQConnection delegate = FieldUtils.getFieldValue("delegate", conn);
+                DebugUtils.Assert(delegate != null, "cannot get RecoveryAwareAMQConnection");
+                Field _missedHeartbeats = FieldUtils.getField("_missedHeartbeats", RecoveryAwareAMQConnection.class);
+                DebugUtils.Assert(_missedHeartbeats!=null, "cannot find _missedHeartbeats");
+                _missedHeartbeats.setAccessible(true);
+                try {
+                    _missedHeartbeats.set(delegate, 100);
+                } catch (IllegalAccessException e) {
+                    throw new CloudRuntimeException(e);
+                }
+
+                while (count < CloudBusGlobalProperty.RABBITMQ_RECOVERABLE_SEND_TIMES) {
+                    try {
+                        TimeUnit.SECONDS.sleep(interval);
+                    } catch (InterruptedException e1) {
+                        logger.warn(e1.getMessage());
+                    }
+
+                    try {
+                        chan.basicPublish(exchange.toString(), serviceId,
+                                true, msg.getAMQPProperties(), data);
+                        return true;
+                    } catch (ShutdownSignalException e) {
+                        logger.warn(String.format("recoverable send fails %s times, will continue to retry %s times; %s",
+                                count, CloudBusGlobalProperty.RABBITMQ_RECOVERABLE_SEND_TIMES-count, e.getMessage()));
+                        count ++;
+                    }
+                }
+
+                return false;
+            }
+        }
+
         @Override
         public Message deserialize(JsonElement jsonElement, Type type, JsonDeserializationContext jsonDeserializationContext) throws JsonParseException {
             JsonObject jObj = jsonElement.getAsJsonObject();
@@ -380,6 +494,25 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
         }
 
         public void send(Message msg) {
+            List<BeforeSendMessageInterceptor> interceptors = beforeSendMessageInterceptors.get(msg.getClass());
+            if (interceptors != null) {
+                for (BeforeSendMessageInterceptor interceptor : interceptors) {
+                    interceptor.intercept(msg);
+
+                    if (logger.isTraceEnabled()) {
+                        logger.trace(String.format("called %s for message[%s]", interceptor.getClass(), msg.getClass()));
+                    }
+                }
+            }
+
+            for (BeforeSendMessageInterceptor interceptor : beforeSendMessageInterceptorsForAll) {
+                interceptor.intercept(msg);
+
+                if (logger.isTraceEnabled()) {
+                    logger.trace(String.format("called %s for message[%s]", interceptor.getClass(), msg.getClass()));
+                }
+            }
+
             send(msg, true);
         }
 
@@ -395,16 +528,7 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
             msg.putHeaderEntry("schema", MessageJsonSchemaBuilder.buildSchema(msg));
         }
 
-        private byte[] compressMessageIfNeeded(Message msg) throws IOException {
-            if (!CloudBusGlobalProperty.COMPRESS_NON_API_MESSAGE || msg instanceof APIEvent || msg instanceof APIMessage) {
-                return gson.toJson(msg, Message.class).getBytes();
-            }
-
-            msg.getAMQPHeaders().put(AMQP_PROPERTY_HEADER__COMPRESSED, "true");
-            return Compresser.deflate(gson.toJson(msg, Message.class).getBytes());
-        }
-
-        public void send(Message msg, boolean makeQueueName) {
+        public void send(final Message msg, boolean makeQueueName) {
             /*
             StopWatch watch = new StopWatch();
             watch.start();
@@ -420,21 +544,17 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
                 logger.trace(String.format("[msg send]: %s", wire.dumpMessage(msg)));
             }
 
+            Channel chan = channelPool.acquire();
             try {
-                byte[] data = compressMessageIfNeeded(msg);
-                Channel chan = channelPool.acquire();
-                try {
-                    chan.basicPublish(outboundQueue.getBusExchange().toString(), serviceId,
-                            true, msg.getAMQPProperties(), data);
-                } finally {
-                    channelPool.returnChannel(chan);
-                }
+                new RecoverableSend(chan, msg, serviceId, outboundQueue.getBusExchange()).send();
                 /*
                 watch.stop();
                 logger.debug(String.mediaType("sending %s cost %sms", msg.getClass().getName(), watch.getTime()));
                 */
             } catch (IOException e) {
                 throw new CloudRuntimeException(e);
+            } finally {
+                channelPool.returnChannel(chan);
             }
         }
 
@@ -450,35 +570,40 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
                 logger.trace(String.format("[event publish]: %s", wire.dumpMessage(evt)));
             }
 
+            Channel chan = channelPool.acquire();
             try {
-                byte[] data = compressMessageIfNeeded(evt);
-                Channel chan = channelPool.acquire();
-                try {
-                    chan.basicPublish(BusExchange.BROADCAST.toString(), evt.getType().toString(),
-                            true, evt.getAMQPProperties(), data);
-                } finally {
-                    channelPool.returnChannel(chan);
-                }
+                new RecoverableSend(chan, evt, evt.getType().toString(), BusExchange.BROADCAST).send();
                 /*
                 watch.stop();
                 logger.debug(String.mediaType("sending %s cost %sms", evt.getClass().getName(), watch.getTime()));
                 */
             } catch (IOException e) {
                 throw new CloudRuntimeException(e);
+            } finally {
+                channelPool.returnChannel(chan);
             }
         }
 
         private Serializable getMVELExpression(Message msg, String express, String prefix) {
             Map<String, Serializable> exps = mvelExpressions.get(msg.getClass());
             if (exps == null) {
-                exps = new HashMap<String, Serializable>();
+                exps = new ConcurrentHashMap<String, Serializable>();
                 mvelExpressions.put(msg.getClass(), exps);
             }
 
             String key = String.format("%s:%s", express, prefix);
             Serializable exp = exps.get(key);
             if (exp == null) {
-                exp = MVEL.compileExpression(express);
+                if (prefix.equals("msg:get")) {
+                    exp = MVEL.compileGetExpression(express);
+                } else if (prefix.equals("raw:get")) {
+                    exp = MVEL.compileGetExpression(express);
+                } else if (prefix.equals("msg:set")) {
+                    exp = MVEL.compileSetExpression(express);
+                } else {
+                    throw new CloudRuntimeException(String.format("unknown prefix[%s]", prefix));
+                }
+
                 exps.put(key, exp);
             }
             return exp;
@@ -495,6 +620,7 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
             for (Map.Entry<String, List<String>> e : schema.entrySet()) {
                 String rawClassName = e.getKey();
                 List<String> paths = e.getValue();
+
                 for (String path : paths) {
                     Serializable exp = getMVELExpression(msg, path, "msg:get");
                     Object obj = MVEL.executeExpression(exp, msg);
@@ -506,15 +632,12 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
                     Object rawData = MVEL.executeExpression(exp, raw);
                     Class rawClass = Class.forName(rawClassName);
                     Object newValue = JSONObjectUtil.rehashObject(rawData, rawClass);
-                    String setExpress = String.format("CONTEXT_OBJECT.%s = newValue", path);
-                    exp = getMVELExpression(msg, setExpress, "msg:set");
-                    Map vars = map(e("newValue", newValue));
+                    exp = getMVELExpression(msg, path, "msg:set");
                     // Note MVEL context is
                     // not meant for write but rather for read. Use a Map context to
                     // force MVEL to assign newValue on msg, not to create a new variable
                     // in vars map
-                    Map context = map(e("CONTEXT_OBJECT", msg));
-                    MVEL.executeExpression(exp, context, vars);
+                    MVEL.executeSetExpression(exp, msg, newValue);
                 }
             }
         }
@@ -603,7 +726,7 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
         public void construct() {
             try {
                 eventChan = conn.createChannel();
-                eventChan.queueDeclare(queueName, true, false, false, queueArguments());
+                eventChan.queueDeclare(queueName, false, false, true, queueArguments());
                 eventChan.basicConsume(queueName, true, this);
             } catch (IOException e) {
                 throw new CloudRuntimeException(e);
@@ -802,7 +925,7 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
 
             Channel chan = channelPool.acquire();
             try {
-                chan.queueDeclare(name, true, false, true, null);
+                chan.queueDeclare(name, false, false, true, null);
                 chan.basicConsume(name, true, tracker);
                 chan.queueBind(name, BusExchange.BROADCAST.toString(), "#");
             } finally {
@@ -1036,7 +1159,6 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
         }
     }
 
-
     private MessageTracker tracker;
 
     void init() {
@@ -1051,6 +1173,11 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
                 return Address.parseAddress(arg);
             }
         });
+        connFactory.setAutomaticRecoveryEnabled(true);
+        connFactory.setRequestedHeartbeat(CloudBusGlobalProperty.RABBITMQ_HEART_BEAT_TIMEOUT);
+        connFactory.setNetworkRecoveryInterval((int) TimeUnit.SECONDS.toMillis(CloudBusGlobalProperty.RABBITMQ_NETWORK_RECOVER_INTERVAL));
+        connFactory.setConnectionTimeout((int) TimeUnit.SECONDS.toMillis(CloudBusGlobalProperty.RABBITMQ_CONNECTION_TIMEOUT));
+
         logger.info(String.format("use RabbitMQ server IPs: %s", serverIps));
 
         try {
@@ -1060,7 +1187,7 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
             }
             if (CloudBusGlobalProperty.RABBITMQ_PASSWORD != null) {
                 connFactory.setPassword(CloudBusGlobalProperty.RABBITMQ_PASSWORD);
-                logger.info(String.format("use RabbitMQ password: ******"));
+                logger.info("use RabbitMQ password: ******");
             }
             if (CloudBusGlobalProperty.RABBITMQ_VIRTUAL_HOST != null) {
                 connFactory.setVirtualHost(CloudBusGlobalProperty.RABBITMQ_VIRTUAL_HOST);
@@ -1068,11 +1195,20 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
             }
 
             conn = connFactory.newConnection(addresses.toArray(new Address[]{}));
+            logger.debug(String.format("rabbitmq connection is established on %s", conn.getAddress()));
+
+            ((Recoverable)conn).addRecoveryListener(new RecoveryListener() {
+                @Override
+                public void handleRecovery(Recoverable recoverable) {
+                    logger.info(String.format("rabbitmq connection is recovering on %s", conn.getAddress().toString()));
+                }
+            });
+
             channelPool = new ChannelPool(CloudBusGlobalProperty.CHANNEL_POOL_SIZE, conn);
             createExchanges();
             outboundQueue = new BusQueue(makeMessageQueueName(SERVICE_ID), BusExchange.P2P);
             Channel chan = channelPool.acquire();
-            chan.queueDeclare(outboundQueue.getName(), true, false, false, queueArguments());
+            chan.queueDeclare(outboundQueue.getName(), false, false, true, queueArguments());
             chan.basicConsume(outboundQueue.getName(), true, consumer);
             chan.queueBind(outboundQueue.getName(), outboundQueue.getBusExchange().toString(), outboundQueue.getBindingKey());
             channelPool.returnChannel(chan);
@@ -1182,7 +1318,8 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
     }
 
     private void evaluateMessageTimeout(NeedReplyMessage msg) {
-        Long timeout = messageTimeout.get(msg.getClass());
+        Long timeout = timeoutMgr.getTimeout(msg.getClass());
+
         if (timeout != null && msg.getTimeout() == -1) {
             msg.setTimeout(timeout);
         }
@@ -1593,6 +1730,30 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
         eventProperty(event);
         buildResponseMessageMetaData(event);
         callReplyPreSendingExtensions(event);
+
+        BeforePublishEventInterceptor c = null;
+        try {
+            List<BeforePublishEventInterceptor> is = beforeEventPublishInterceptors.get(event.getClass());
+            if (is != null) {
+                for (BeforePublishEventInterceptor i : is) {
+                    c = i;
+                    i.beforePublishEvent(event);
+                }
+            }
+
+            for (BeforePublishEventInterceptor i : beforeEventPublishInterceptorsForAll)  {
+                c = i;
+                i.beforePublishEvent(event);
+            }
+        } catch (StopRoutingException e) {
+            if (logger.isTraceEnabled()) {
+                logger.trace(String.format("BeforePublishEventInterceptor[%s] stop publishing event: %s",
+                        c == null ? "null" : c.getClass().getName(), JSONObjectUtil.toJsonString(event)));
+            }
+
+            return;
+        }
+
         wire.publish(event);
     }
 
@@ -1815,7 +1976,32 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
 
                                 @Override
                                 public Void call() throws Exception {
-                                    serv.handleMessage(msg);
+                                    try {
+                                        List<BeforeDeliveryMessageInterceptor> is = beforeDeliveryMessageInterceptors.get(msg.getClass());
+                                        if (is != null) {
+                                            for (BeforeDeliveryMessageInterceptor i : is) {
+                                                i.intercept(msg);
+
+                                                if (logger.isTraceEnabled()) {
+                                                    logger.trace(String.format("called BeforeDeliveryMessageInterceptor[%s] for message[%s]", i.getClass(), msg.getClass()));
+                                                }
+                                            }
+                                        }
+
+                                        for (BeforeDeliveryMessageInterceptor i : beforeDeliveryMessageInterceptorsForAll) {
+                                            i.intercept(msg);
+
+                                            if (logger.isTraceEnabled()) {
+                                                logger.trace(String.format("called BeforeDeliveryMessageInterceptor[%s] for message[%s]", i.getClass(), msg.getClass()));
+                                            }
+                                        }
+
+                                        serv.handleMessage(msg);
+                                    } catch (Throwable t) {
+                                        logExceptionWithMessageDump(msg, t);
+                                        replyErrorByMessageType(msg, errf.stringToInternalError(t.getMessage()));
+                                    }
+
                                     return null;
                                 }
                             };
@@ -1836,12 +2022,12 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
             public void active() {
                 try {
                     echan = conn.createChannel();
-                    echan.queueDeclare(baseName, true, false, true, null);
+                    echan.queueDeclare(baseName, false, false, true, null);
                     echan.basicConsume(baseName, true, handler);
                     echan.queueBind(baseName, BusExchange.P2P.toString(), baseName);
 
                     for (String aliasName : aliasNames) {
-                        echan.queueDeclare(aliasName, true, false, true, null);
+                        echan.queueDeclare(aliasName, false, false, true, null);
                         echan.basicConsume(aliasName, true, handler);
                         echan.queueBind(aliasName, BusExchange.P2P.toString(), aliasName);
                     }
@@ -1939,7 +2125,12 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
     @Override
     public void dealWithUnknownMessage(Message msg) {
         String details = String.format("No service deals with message: %s", wire.dumpMessage(msg));
-        if (msg instanceof APIMessage) {
+        if (msg instanceof APISyncCallMessage) {
+            APIReply reply = new APIReply();
+            reply.setError(errf.instantiateErrorCode(SysErrors.UNKNOWN_MESSAGE_ERROR, details));
+            reply.setSuccess(false);
+            this.reply(msg, reply);
+        } else if (msg instanceof APIMessage) {
             APIEvent evt = new APIEvent(msg.getId());
             evt.setErrorCode(errf.instantiateErrorCode(SysErrors.UNKNOWN_MESSAGE_ERROR, details));
             this.publish(evt);
@@ -2062,6 +2253,123 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
         msg.setServiceId(targetService);
     }
 
+    @Override
+    public void installBeforeDeliveryMessageInterceptor(BeforeDeliveryMessageInterceptor interceptor, Class<? extends Message>... classes) {
+        if (classes.length == 0) {
+            int order = 0;
+            for (BeforeDeliveryMessageInterceptor i : beforeDeliveryMessageInterceptorsForAll) {
+                if (i.orderOfBeforeDeliveryMessageInterceptor() <= interceptor.orderOfBeforeDeliveryMessageInterceptor()) {
+                    order = beforeDeliveryMessageInterceptorsForAll.indexOf(i);
+                    break;
+                }
+            }
+
+            beforeDeliveryMessageInterceptorsForAll.add(order, interceptor);
+            return;
+        }
+
+        for (Class clz : classes) {
+            while (clz != Object.class) {
+                List<BeforeDeliveryMessageInterceptor> is = beforeDeliveryMessageInterceptors.get(clz);
+                if (is == null) {
+                    is = new ArrayList<BeforeDeliveryMessageInterceptor>();
+                    beforeDeliveryMessageInterceptors.put(clz, is);
+                }
+
+                synchronized (is) {
+                    int order = 0;
+                    for (BeforeDeliveryMessageInterceptor i : is) {
+                        if (i.orderOfBeforeDeliveryMessageInterceptor() <= interceptor.orderOfBeforeDeliveryMessageInterceptor()) {
+                            order = is.indexOf(i);
+                            break;
+                        }
+                    }
+                    is.add(order, interceptor);
+                }
+
+                clz = clz.getSuperclass();
+            }
+        }
+    }
+
+    @Override
+    public void installBeforeSendMessageInterceptor(BeforeSendMessageInterceptor interceptor, Class<? extends Message>... classes) {
+        if (classes.length == 0) {
+            int order = 0;
+            for (BeforeSendMessageInterceptor i : beforeSendMessageInterceptorsForAll) {
+                if (i.order() <= interceptor.order()) {
+                    order = beforeSendMessageInterceptorsForAll.indexOf(i);
+                    break;
+                }
+            }
+
+            beforeSendMessageInterceptorsForAll.add(order, interceptor);
+            return;
+        }
+
+        for (Class clz : classes) {
+            while (clz != Object.class) {
+                List<BeforeSendMessageInterceptor> is = beforeSendMessageInterceptors.get(clz);
+                if (is == null) {
+                    is = new ArrayList<BeforeSendMessageInterceptor>();
+                    beforeSendMessageInterceptors.put(clz, is);
+                }
+
+                synchronized (is) {
+                    int order = 0;
+                    for (BeforeSendMessageInterceptor i : is) {
+                        if (i.order() <= interceptor.order()) {
+                            order = is.indexOf(i);
+                            break;
+                        }
+                    }
+                    is.add(order, interceptor);
+                }
+
+                clz = clz.getSuperclass();
+            }
+        }
+    }
+
+    @Override
+    public void installBeforePublishEventInterceptor(BeforePublishEventInterceptor interceptor, Class<? extends Event>... classes) {
+        if (classes.length == 0) {
+            int order = 0;
+            for (BeforePublishEventInterceptor i : beforeEventPublishInterceptorsForAll) {
+                if (i.orderOfBeforePublishEventInterceptor() <= interceptor.orderOfBeforePublishEventInterceptor()) {
+                    order = beforeEventPublishInterceptorsForAll.indexOf(i);
+                    break;
+                }
+            }
+
+            beforeEventPublishInterceptorsForAll.add(order, interceptor);
+            return;
+        }
+
+        for (Class clz : classes) {
+            while (clz != Object.class) {
+                List<BeforePublishEventInterceptor> is = beforeEventPublishInterceptors.get(clz);
+                if (is == null) {
+                    is = new ArrayList<BeforePublishEventInterceptor>();
+                    beforeEventPublishInterceptors.put(clz, is);
+                }
+
+                synchronized (is) {
+                    int order = 0;
+                    for (BeforePublishEventInterceptor i : is) {
+                        if (i.orderOfBeforePublishEventInterceptor() <= interceptor.orderOfBeforePublishEventInterceptor()) {
+                            order = is.indexOf(i);
+                            break;
+                        }
+                    }
+                    is.add(order, interceptor);
+                }
+
+                clz = clz.getSuperclass();
+            }
+        }
+    }
+
     private void populateExtension() {
         services = pluginRgty.getExtensionList(Service.class);
         for (ReplyMessagePreSendingExtensionPoint extp : pluginRgty.getExtensionList(ReplyMessagePreSendingExtensionPoint.class)) {
@@ -2086,40 +2394,10 @@ public class CloudBusImpl2 implements CloudBus, CloudBusIN, ManagementNodeChange
         }
     }
 
-    private void collectMessageTimeOut() {
-        Map<String, String> props = Platform.getGlobalPropertiesStartWith(TIMEOUT_PROPERTY_PREFIX);
-        for (Map.Entry<String, String> e : props.entrySet()) {
-            String timeoutStr = StringDSL.stripStart(e.getKey(), TIMEOUT_PROPERTY_PREFIX);
-            try {
-                long timeout = Long.valueOf(timeoutStr);
-                String[] msgNames = StringUtils.split(e.getValue(), ",");
-                for (String msgName : msgNames) {
-                    try {
-                        Class msgClz = Class.forName(msgName);
-                        if (!Message.class.isAssignableFrom(msgClz)) {
-                            throw new CloudRuntimeException(String.format("message name[%s] defined in property[%s] in zstack.properties is invalid. It's not sub-class of Message", msgName, e.getKey()));
-                        }
-                        if (APIMessage.class.isAssignableFrom(msgClz)) {
-                            continue;
-                        }
-
-                        messageTimeout.put(msgClz, TimeUnit.SECONDS.toMillis(timeout));
-                    } catch (ClassNotFoundException e1) {
-                        throw new CloudRuntimeException(String.format("message name[%s] defined in property[%s] in zstack.properties is invalid. Cannot find its java class", msgName, e.getKey()), e1);
-                    }
-                }
-            } catch (NumberFormatException ne) {
-                throw new CloudRuntimeException(String.format("property key[%s] defined in zstack.properties is not in correct mediaType. The correct mediaType must be %s.aNumericString(for example, %s.3600)",
-                        e.getKey(), TIMEOUT_PROPERTY_PREFIX, TIMEOUT_PROPERTY_PREFIX), ne);
-            }
-        }
-    }
-
     @Override
     public boolean start() {
         populateExtension();
         prepareStatistics();
-        collectMessageTimeOut();
 
         for (Service serv : services) {
             assert serv.getId() != null : String.format("service id can not be null[%s]", serv.getClass().getName());

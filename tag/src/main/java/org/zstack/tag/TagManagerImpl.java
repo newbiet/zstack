@@ -12,8 +12,8 @@ import org.zstack.core.db.SimpleQuery;
 import org.zstack.core.db.SimpleQuery.Op;
 import org.zstack.core.db.SoftDeleteEntityExtensionPoint;
 import org.zstack.core.errorcode.ErrorFacade;
-import org.zstack.core.safeguard.Guard;
-import org.zstack.core.safeguard.SafeGuard;
+import org.zstack.core.defer.Deferred;
+import org.zstack.core.defer.Defer;
 import org.zstack.header.AbstractService;
 import org.zstack.header.apimediator.ApiMessageInterceptionException;
 import org.zstack.header.apimediator.GlobalApiMessageInterceptor;
@@ -24,7 +24,6 @@ import org.zstack.header.message.Message;
 import org.zstack.header.query.APIQueryReply;
 import org.zstack.header.tag.*;
 import org.zstack.query.QueryFacade;
-import org.zstack.tag.SystemTag.SystemTagOperation;
 import org.zstack.utils.*;
 import org.zstack.utils.function.Function;
 import org.zstack.utils.logging.CLogger;
@@ -218,11 +217,13 @@ public class TagManagerImpl extends AbstractService implements TagManager,
     }
 
     @Override
-    @Guard
+    @Deferred
     public SystemTagInventory createNonInherentSystemTag(String resourceUuid, String tag, String resourceType) {
         if (isTagExisting(resourceUuid, tag, TagType.System, resourceType)) {
             return null;
         }
+
+        validateSystemTag(resourceUuid, resourceType, tag);
 
         SystemTagVO vo = new SystemTagVO();
         vo.setResourceType(resourceType);
@@ -231,11 +232,14 @@ public class TagManagerImpl extends AbstractService implements TagManager,
         vo.setInherent(false);
         vo.setTag(tag);
         vo.setType(TagType.System);
+
+        preTagCreated(SystemTagInventory.valueOf(vo));
+
         vo = dbf.persistAndRefresh(vo);
         SystemTagInventory inv = SystemTagInventory.valueOf(vo);
 
         final SystemTagVO finalVo = vo;
-        SafeGuard.guard(new Runnable() {
+        Defer.guard(new Runnable() {
             @Override
             public void run() {
                 dbf.remove(finalVo);
@@ -251,6 +255,8 @@ public class TagManagerImpl extends AbstractService implements TagManager,
         if (isTagExisting(resourceUuid, tag, TagType.System, resourceType)) {
             return null;
         }
+
+        validateSystemTag(resourceUuid, resourceType, tag);
 
         SystemTagVO vo = new SystemTagVO();
         vo.setResourceType(resourceType);
@@ -300,6 +306,8 @@ public class TagManagerImpl extends AbstractService implements TagManager,
 
     @Override
     public TagInventory createSysTag(String resourceUuid, String tag, String resourceType) {
+        validateSystemTag(resourceUuid, resourceType, tag);
+
         return createTag(resourceUuid, tag, TagType.System, resourceType);
     }
 
@@ -310,6 +318,8 @@ public class TagManagerImpl extends AbstractService implements TagManager,
 
     @Override
     public TagInventory createSysTag(String resourceUuid, Enum tag, String resourceType) {
+        validateSystemTag(resourceUuid, resourceType, tag.toString());
+
         return createSysTag(resourceUuid, tag.toString(), resourceType);
     }
 
@@ -337,6 +347,26 @@ public class TagManagerImpl extends AbstractService implements TagManager,
             ntag.setResourceType(dstResourceType);
             ntag.setResourceUuid(dstResourceUuid);
             dbf.getEntityManager().persist(ntag);
+        }
+    }
+
+    @Override
+    public SystemTagInventory updateSystemTag(String tagUuid, String newTag) {
+        SystemTagVO vo = dbf.findByUuid(tagUuid, SystemTagVO.class);
+        SystemTagInventory old = SystemTagInventory.valueOf(vo);
+        if (!vo.getTag().equals(newTag)) {
+            vo.setTag(newTag);
+
+            SystemTagInventory n = ObjectUtils.copy(new SystemTagInventory(), old);
+            n.setTag(newTag);
+            preTagUpdated(old, n);
+
+            vo = dbf.updateAndRefresh(vo);
+            SystemTagInventory nt = SystemTagInventory.valueOf(vo);
+            fireTagUpdated(old, nt);
+            return SystemTagInventory.valueOf(vo);
+        } else {
+            return old;
         }
     }
 
@@ -498,26 +528,10 @@ public class TagManagerImpl extends AbstractService implements TagManager,
         }
     }
 
-    @Guard
+    @Deferred
     private void handle(APIUpdateSystemTagMsg msg) {
         APIUpdateSystemTagEvent evt = new APIUpdateSystemTagEvent(msg.getId());
-        SystemTagVO vo = dbf.findByUuid(msg.getUuid(), SystemTagVO.class);
-        SystemTagInventory old = SystemTagInventory.valueOf(vo);
-        if (!vo.getTag().equals(msg.getTag())) {
-            vo.setTag(msg.getTag());
-
-            SystemTagInventory n = ObjectUtils.copy(new SystemTagInventory(), old);
-            n.setTag(msg.getTag());
-            preTagUpdated(old, n);
-
-            vo = dbf.updateAndRefresh(vo);
-            SystemTagInventory newTag = SystemTagInventory.valueOf(vo);
-            fireTagUpdated(old, newTag);
-            evt.setInventory(SystemTagInventory.valueOf(vo));
-        } else {
-            evt.setInventory(old);
-        }
-
+        evt.setInventory(updateSystemTag(msg.getUuid(), msg.getTag()));
         bus.publish(evt);
     }
 
@@ -706,6 +720,10 @@ public class TagManagerImpl extends AbstractService implements TagManager,
         return msg;
     }
 
+    private boolean isTagMatch(SystemTagInventory t, SystemTag s) {
+        return s.isMatch(t.getTag());
+    }
+
     @Override
     public List<String> getResourceTypeOfSystemTags() {
         List<String> lst = new ArrayList<String>();
@@ -715,46 +733,70 @@ public class TagManagerImpl extends AbstractService implements TagManager,
 
     private void preTagCreated(SystemTagInventory tag) {
         List<SystemTag> tags = resourceTypeSystemTagMap.get(tag.getResourceType());
-        for (SystemTag stag : tags) {
-            stag.callCreatedJudger(tag);
+        if (tags != null) {
+            for (SystemTag stag : tags) {
+                if (isTagMatch(tag, stag)) {
+                    stag.callCreatedJudger(tag);
+                }
+            }
         }
     }
 
     @Override
     public void tagCreated(SystemTagInventory tag) {
         List<SystemTag> tags = resourceTypeSystemTagMap.get(tag.getResourceType());
-        for (SystemTag stag : tags) {
-            stag.callTagCreatedListener(tag);
+        if (tags != null) {
+            for (SystemTag stag : tags) {
+                if (isTagMatch(tag, stag)) {
+                    stag.callTagCreatedListener(tag);
+                }
+            }
         }
     }
 
     private void preTagDeleted(SystemTagInventory tag) {
         List<SystemTag> tags = resourceTypeSystemTagMap.get(tag.getResourceType());
-        for (SystemTag stag : tags) {
-            stag.callDeletedJudger(tag);
+        if (tags != null) {
+            for (SystemTag stag : tags) {
+                if (isTagMatch(tag, stag)) {
+                    stag.callDeletedJudger(tag);
+                }
+            }
         }
     }
 
     @Override
     public void tagDeleted(SystemTagInventory tag) {
         List<SystemTag> tags = resourceTypeSystemTagMap.get(tag.getResourceType());
-        for (SystemTag stag : tags) {
-            stag.callTagDeletedListener(tag);
+        if (tags != null) {
+            for (SystemTag stag : tags) {
+                if (isTagMatch(tag, stag)) {
+                    stag.callTagDeletedListener(tag);
+                }
+            }
         }
     }
 
     private void preTagUpdated(SystemTagInventory old, SystemTagInventory newTag) {
         List<SystemTag> tags = resourceTypeSystemTagMap.get(old.getResourceType());
-        for (SystemTag stag : tags) {
-            stag.callUpdatedJudger(old, newTag);
+        if (tags != null) {
+            for (SystemTag stag : tags) {
+                if (isTagMatch(old, stag) && isTagMatch(newTag, stag)) {
+                    stag.callUpdatedJudger(old, newTag);
+                }
+            }
         }
     }
 
     @Override
     public void tagUpdated(SystemTagInventory old, SystemTagInventory newTag) {
         List<SystemTag> tags = resourceTypeSystemTagMap.get(old.getResourceType());
-        for (SystemTag stag : tags) {
-            stag.callTagUpdatedListener(old, newTag);
+        if (tags != null) {
+            for (SystemTag stag : tags) {
+                if (isTagMatch(old, stag) && isTagMatch(newTag, stag)) {
+                    stag.callTagUpdatedListener(old, newTag);
+                }
+            }
         }
     }
 

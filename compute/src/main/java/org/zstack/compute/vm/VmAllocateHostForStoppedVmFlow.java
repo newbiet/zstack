@@ -3,11 +3,13 @@ package org.zstack.compute.vm;
 import org.springframework.beans.factory.annotation.Autowire;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Configurable;
+import org.springframework.transaction.annotation.Transactional;
 import org.zstack.core.cloudbus.CloudBus;
 import org.zstack.core.cloudbus.CloudBusCallBack;
 import org.zstack.core.db.DatabaseFacade;
 import org.zstack.core.errorcode.ErrorFacade;
 import org.zstack.header.core.workflow.Flow;
+import org.zstack.header.core.workflow.FlowRollback;
 import org.zstack.header.core.workflow.FlowTrigger;
 import org.zstack.header.allocator.AllocateHostReply;
 import org.zstack.header.allocator.HostAllocatorConstant;
@@ -16,8 +18,10 @@ import org.zstack.header.allocator.ReturnHostCapacityMsg;
 import org.zstack.header.host.HostInventory;
 import org.zstack.header.message.MessageReply;
 import org.zstack.header.network.l3.L3NetworkInventory;
+import org.zstack.header.vm.VmInstance;
 import org.zstack.header.vm.VmInstanceConstant;
 import org.zstack.header.vm.VmInstanceSpec;
+import org.zstack.header.vm.VmInstanceVO;
 import org.zstack.utils.CollectionUtils;
 import org.zstack.utils.function.Function;
 
@@ -31,8 +35,10 @@ public class VmAllocateHostForStoppedVmFlow implements Flow {
     @Autowired
     protected ErrorFacade errf;
 
+    private static final String SUCCESS = VmAllocateHostForStoppedVmFlow.class.getName();
+
     @Override
-    public void run(final FlowTrigger chain, Map data) {
+    public void run(final FlowTrigger chain, final Map data) {
         final VmInstanceSpec spec = (VmInstanceSpec) data.get(VmInstanceConstant.Params.VmInstanceSpec.toString());
 
         LastHostPreferredAllocateHostMsg msg = new LastHostPreferredAllocateHostMsg();
@@ -51,11 +57,20 @@ public class VmAllocateHostForStoppedVmFlow implements Flow {
         }));
         msg.setServiceId(bus.makeLocalServiceId(HostAllocatorConstant.SERVICE_ID));
         bus.send(msg, new CloudBusCallBack(chain) {
+            @Transactional
+            private void setVmHostUuid(String huuid) {
+                VmInstanceVO vo = dbf.getEntityManager().find(VmInstanceVO.class, spec.getVmInventory().getUuid());
+                vo.setHostUuid(huuid);
+                dbf.getEntityManager().merge(vo);
+            }
+
             @Override
             public void run(MessageReply reply) {
                 if (reply.isSuccess()) {
                     AllocateHostReply areply = (AllocateHostReply) reply;
                     spec.setDestHost(areply.getHost());
+                    setVmHostUuid(areply.getHost().getUuid());
+                    data.put(SUCCESS, true);
                     chain.next();
                 } else {
                     chain.fail(reply.getError());
@@ -65,14 +80,18 @@ public class VmAllocateHostForStoppedVmFlow implements Flow {
     }
 
     @Override
-    public void rollback(FlowTrigger chain, Map data) {
+    public void rollback(FlowRollback chain, Map data) {
         final VmInstanceSpec spec = (VmInstanceSpec) data.get(VmInstanceConstant.Params.VmInstanceSpec.toString());
-        HostInventory host = spec.getDestHost();
-        if (host != null) {
+        if (data.containsKey(SUCCESS)) {
+            VmInstanceVO vm = dbf.findByUuid(spec.getVmInventory().getUuid(), VmInstanceVO.class);
+            vm.setHostUuid(null);
+            dbf.update(vm);
+
+            HostInventory host = spec.getDestHost();
             ReturnHostCapacityMsg msg = new ReturnHostCapacityMsg();
-            msg.setCpuCapacity(spec.getVmInventory().getCpuNum()*spec.getVmInventory().getCpuSpeed());
+            msg.setCpuCapacity(spec.getVmInventory().getCpuNum() * spec.getVmInventory().getCpuSpeed());
             msg.setMemoryCapacity(spec.getVmInventory().getMemorySize());
-            msg.setHost(host);
+            msg.setHostUuid(host.getUuid());
             msg.setServiceId(bus.makeLocalServiceId(HostAllocatorConstant.SERVICE_ID));
             bus.send(msg);
         }

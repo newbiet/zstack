@@ -14,15 +14,16 @@ import org.zstack.core.workflow.FlowChainBuilder;
 import org.zstack.header.AbstractService;
 import org.zstack.header.apimediator.ApiMessageInterceptionException;
 import org.zstack.header.core.Completion;
-import org.zstack.header.core.NoErrorCompletion;
 import org.zstack.header.core.workflow.FlowChain;
+import org.zstack.header.core.workflow.FlowChainProcessor;
 import org.zstack.header.core.workflow.FlowDoneHandler;
 import org.zstack.header.core.workflow.FlowErrorHandler;
 import org.zstack.header.errorcode.ErrorCode;
+import org.zstack.header.errorcode.OperationFailureException;
 import org.zstack.header.exception.CloudRuntimeException;
 import org.zstack.header.identity.IdentityErrors;
 import org.zstack.header.identity.Quota;
-import org.zstack.header.identity.Quota.CheckQuotaForApiMessage;
+import org.zstack.header.identity.Quota.QuotaOperator;
 import org.zstack.header.identity.Quota.QuotaPair;
 import org.zstack.header.identity.ReportQuotaExtensionPoint;
 import org.zstack.header.message.APIMessage;
@@ -38,7 +39,9 @@ import org.zstack.identity.AccountManager;
 import org.zstack.network.service.NetworkServiceManager;
 import org.zstack.network.service.vip.*;
 import org.zstack.tag.TagManager;
+import org.zstack.utils.CollectionUtils;
 import org.zstack.utils.Utils;
+import org.zstack.utils.function.Function;
 import org.zstack.utils.logging.CLogger;
 
 import javax.persistence.Tuple;
@@ -50,7 +53,7 @@ import static org.zstack.utils.CollectionDSL.list;
 /**
  */
 public class EipManagerImpl extends AbstractService implements EipManager, VipReleaseExtensionPoint,
-        AddExpandedQueryExtensionPoint, ReportQuotaExtensionPoint {
+        AddExpandedQueryExtensionPoint, ReportQuotaExtensionPoint, VmPreAttachL3NetworkExtensionPoint {
     private static final CLogger logger = Utils.getLogger(EipManagerImpl.class);
 
     @Autowired
@@ -448,12 +451,20 @@ public class EipManagerImpl extends AbstractService implements EipManager, VipRe
     }
 
 
-    private void detachEip(EipStruct struct, String providerType, final boolean updateDb, final Completion completion) {
+    private void detachEip(final EipStruct struct, final String providerType, final boolean updateDb, final Completion completion) {
         VipInventory vip = struct.getVip();
         VmNicInventory nic = struct.getNic();
         final EipInventory eip = struct.getEip();
 
         FlowChain chain = detachEipFlowBuilder.build();
+
+        chain.setProcessors(CollectionUtils.transformToList(pluginRgty.getExtensionList(DetachEipFlowChainExtensionPoint.class), new Function<FlowChainProcessor, DetachEipFlowChainExtensionPoint>() {
+            @Override
+            public FlowChainProcessor call(DetachEipFlowChainExtensionPoint ext) {
+                return ext.createDetachEipFlowChainProcessor(struct, providerType);
+            }
+        }));
+
         chain.setName(String.format("detach-eip-%s-vmNic-%s", eip.getUuid(), nic.getUuid()));
         chain.getData().put(EipConstant.Params.EIP_STRUCT.toString(), struct);
         chain.getData().put(EipConstant.Params.NETWORK_SERVICE_PROVIDER_TYPE.toString(), providerType);
@@ -489,7 +500,7 @@ public class EipManagerImpl extends AbstractService implements EipManager, VipRe
     }
 
     @Override
-    public void attachEip(EipStruct struct, String providerType, final Completion completion) {
+    public void attachEip(final EipStruct struct, final String providerType, final Completion completion) {
         final EipInventory eip = struct.getEip();
         final VmNicInventory nic = struct.getNic();
         VipInventory vip = struct.getVip();
@@ -498,6 +509,14 @@ public class EipManagerImpl extends AbstractService implements EipManager, VipRe
         L3NetworkInventory l3inv = L3NetworkInventory.valueOf(l3vo);
 
         FlowChain chain = attachEipFlowBuilder.build();
+
+        chain.setProcessors(CollectionUtils.transformToList(pluginRgty.getExtensionList(AttachEipFlowChainExtensionPoint.class), new Function<FlowChainProcessor, AttachEipFlowChainExtensionPoint>() {
+            @Override
+            public FlowChainProcessor call(AttachEipFlowChainExtensionPoint ext) {
+                return ext.createAttachEipFlowChainProcessor(struct, providerType);
+            }
+        }));
+
         chain.setName(String.format("attach-eip-%s-vmNic-%s", eip.getUuid(), nic.getUuid()));
         chain.getData().put(EipConstant.Params.NETWORK_SERVICE_PROVIDER_TYPE.toString(), providerType);
         chain.getData().put(EipConstant.Params.EIP_STRUCT.toString(), struct);
@@ -555,7 +574,7 @@ public class EipManagerImpl extends AbstractService implements EipManager, VipRe
         q.select(VmInstanceVO_.state);
         q.add(VmInstanceVO_.uuid, SimpleQuery.Op.EQ, nicvo.getVmInstanceUuid());
         VmInstanceState state = q.findValue();
-        if (VmInstanceState.Running != state) {
+        if (VmInstanceState.Stopped == state) {
             dbf.remove(vo);
             completion.success();
             return;
@@ -616,7 +635,7 @@ public class EipManagerImpl extends AbstractService implements EipManager, VipRe
 
     @Override
     public List<Quota> reportQuota() {
-        CheckQuotaForApiMessage checker = new CheckQuotaForApiMessage() {
+        QuotaOperator checker = new QuotaOperator() {
             @Override
             public void checkQuota(APIMessage msg, Map<String, QuotaPair> pairs) {
                 if (msg instanceof APICreateEipMsg) {
@@ -624,18 +643,31 @@ public class EipManagerImpl extends AbstractService implements EipManager, VipRe
                 }
             }
 
-            @Transactional(readOnly = true)
-            private void check(APICreateEipMsg msg, Map<String, QuotaPair> pairs) {
-                long eipNum = pairs.get(EipConstant.QUOTA_EIP_NUM).getValue();
+            @Override
+            public List<Quota.QuotaUsage> getQuotaUsageByAccount(String accountUuid) {
+                Quota.QuotaUsage usage = new Quota.QuotaUsage();
+                usage.setName(EipConstant.QUOTA_EIP_NUM);
+                usage.setUsed(getUsedEip(accountUuid));
+                return list(usage);
+            }
 
+            @Transactional(readOnly = true)
+            private long getUsedEip(String accountUuid) {
                 String sql = "select count(eip) from EipVO eip, AccountResourceRefVO ref where ref.resourceUuid = eip.uuid and " +
                         "ref.accountUuid = :auuid and ref.resourceType = :rtype";
 
                 TypedQuery<Long> q = dbf.getEntityManager().createQuery(sql, Long.class);
-                q.setParameter("auuid", msg.getSession().getAccountUuid());
+                q.setParameter("auuid", accountUuid);
                 q.setParameter("rtype", EipVO.class.getSimpleName());
                 Long en = q.getSingleResult();
                 en = en == null ? 0 : en;
+                return en;
+            }
+
+            @Transactional(readOnly = true)
+            private void check(APICreateEipMsg msg, Map<String, QuotaPair> pairs) {
+                long eipNum = pairs.get(EipConstant.QUOTA_EIP_NUM).getValue();
+                long en = getUsedEip(msg.getSession().getAccountUuid());
 
                 if (en + 1 > eipNum) {
                     throw new ApiMessageInterceptionException(errf.instantiateErrorCode(IdentityErrors.QUOTA_EXCEEDING,
@@ -647,8 +679,8 @@ public class EipManagerImpl extends AbstractService implements EipManager, VipRe
         };
 
         Quota quota = new Quota();
-        quota.setMessageNeedValidation(APICreateEipMsg.class);
-        quota.setChecker(checker);
+        quota.addMessageNeedValidation(APICreateEipMsg.class);
+        quota.setOperator(checker);
 
         QuotaPair p = new QuotaPair();
         p.setName(EipConstant.QUOTA_EIP_NUM);
@@ -656,5 +688,38 @@ public class EipManagerImpl extends AbstractService implements EipManager, VipRe
         quota.addPair(p);
 
         return list(quota);
+    }
+
+    @Override
+    public void vmPreAttachL3Network(final VmInstanceInventory vm, final L3NetworkInventory l3) {
+        final List<String> nicUuids = CollectionUtils.transformToList(vm.getVmNics(), new Function<String, VmNicInventory>() {
+            @Override
+            public String call(VmNicInventory arg) {
+                return arg.getUuid();
+            }
+        });
+
+        if (nicUuids.isEmpty()) {
+            return;
+        }
+
+        new Runnable() {
+            @Override
+            @Transactional(readOnly = true)
+            public void run() {
+                String sql = "select count(*) from EipVO eip, VipVO vip where eip.vipUuid = vip.uuid and vip.l3NetworkUuid = :l3Uuid" +
+                        " and eip.vmNicUuid in (:nicUuids)";
+                TypedQuery<Long> q = dbf.getEntityManager().createQuery(sql, Long.class);
+                q.setParameter("l3Uuid", l3.getUuid());
+                q.setParameter("nicUuids", nicUuids);
+                Long count = q.getSingleResult();
+                if (count > 0) {
+                    throw new OperationFailureException(errf.stringToOperationError(
+                            String.format("unable to attach the L3 network[uuid:%s, name:%s] to the vm[uuid:%s, name:%s], because the L3" +
+                                    " network is providing EIP to one of the vm's nic", l3.getUuid(), l3.getName(), vm.getUuid(), vm.getName())
+                    ));
+                }
+            }
+        }.run();
     }
 }

@@ -6,7 +6,9 @@ import org.springframework.beans.factory.annotation.Configurable;
 import org.zstack.core.cloudbus.CloudBus;
 import org.zstack.core.cloudbus.CloudBusCallBack;
 import org.zstack.core.errorcode.ErrorFacade;
+import org.zstack.core.timeout.ApiTimeoutManager;
 import org.zstack.header.core.workflow.Flow;
+import org.zstack.header.core.workflow.FlowRollback;
 import org.zstack.header.core.workflow.FlowTrigger;
 import org.zstack.header.message.MessageReply;
 import org.zstack.header.vm.VmInstanceConstant;
@@ -32,6 +34,8 @@ public class ApplyPortforwardingRuleOnVirtualRouterVmFlow implements Flow {
     private CloudBus bus;
     @Autowired
     private ErrorFacade errf;
+    @Autowired
+    private ApiTimeoutManager apiTimeoutManager;
 
     private final static String VR_APPLY_PORT_FORWARDING_RULE_SUCCESS = "ApplyPortForwardingRuleSuccess";
 
@@ -46,6 +50,7 @@ public class ApplyPortforwardingRuleOnVirtualRouterVmFlow implements Flow {
         VirtualRouterAsyncHttpCallMsg msg = new VirtualRouterAsyncHttpCallMsg();
         msg.setVmInstanceUuid(vr.getUuid());
         msg.setCommand(cmd);
+        msg.setCommandTimeout(apiTimeoutManager.getTimeout(cmd.getClass(), "5m"));
         msg.setPath(VirtualRouterConstant.VR_CREATE_PORT_FORWARDING);
         msg.setCheckStatus(true);
         bus.makeTargetServiceIdByResourceUuid(msg, VmInstanceConstant.SERVICE_ID, vr.getUuid());
@@ -80,7 +85,7 @@ public class ApplyPortforwardingRuleOnVirtualRouterVmFlow implements Flow {
     }
 
     @Override
-    public void rollback(final FlowTrigger chain, Map data) {
+    public void rollback(final FlowRollback chain, Map data) {
         if (data.get(VR_APPLY_PORT_FORWARDING_RULE_SUCCESS) != null) {
             final PortForwardingRuleTO to = (PortForwardingRuleTO) data.get(VirtualRouterConstant.VR_PORT_FORWARDING_RULE);
             final VirtualRouterVmInventory vr = (VirtualRouterVmInventory) data.get(VirtualRouterConstant.VR_RESULT_VM);
@@ -92,6 +97,7 @@ public class ApplyPortforwardingRuleOnVirtualRouterVmFlow implements Flow {
             msg.setCheckStatus(true);
             msg.setPath(VirtualRouterConstant.VR_REVOKE_PORT_FORWARDING);
             msg.setCommand(cmd);
+            msg.setCommandTimeout(apiTimeoutManager.getTimeout(cmd.getClass(), "5m"));
             msg.setVmInstanceUuid(vr.getUuid());
             bus.makeTargetServiceIdByResourceUuid(msg, VmInstanceConstant.SERVICE_ID, vr.getUuid());
             bus.send(msg, new CloudBusCallBack(chain) {

@@ -10,8 +10,40 @@ import java.util.Map;
  * Created by frank on 7/13/2015.
  */
 public class Quota {
-    public interface CheckQuotaForApiMessage {
+    public interface QuotaOperator {
         void checkQuota(APIMessage msg, Map<String, QuotaPair> pairs);
+
+        List<QuotaUsage> getQuotaUsageByAccount(String accountUuid);
+    }
+
+    public static class QuotaUsage {
+        private String name;
+        private Long total;
+        private Long used;
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public Long getTotal() {
+            return total;
+        }
+
+        public void setTotal(Long total) {
+            this.total = total;
+        }
+
+        public Long getUsed() {
+            return used;
+        }
+
+        public void setUsed(Long used) {
+            this.used = used;
+        }
     }
 
     public static class QuotaPair {
@@ -36,8 +68,8 @@ public class Quota {
     }
 
     private List<QuotaPair> quotaPairs;
-    private Class<APIMessage> messageNeedValidation;
-    private CheckQuotaForApiMessage checker;
+    private List<Class<? extends APIMessage>> messagesNeedValidation = new ArrayList<Class<? extends APIMessage>>();
+    private QuotaOperator operator;
 
     public void addPair(QuotaPair p) {
         if (quotaPairs == null) {
@@ -54,19 +86,19 @@ public class Quota {
         this.quotaPairs = quotaPairs;
     }
 
-    public Class<APIMessage> getMessageNeedValidation() {
-        return messageNeedValidation;
+    public void addMessageNeedValidation(Class<? extends APIMessage> msgClass) {
+        messagesNeedValidation.add(msgClass);
     }
 
-    public void setMessageNeedValidation(Class messageNeedValidation) {
-        this.messageNeedValidation = messageNeedValidation;
+    public List<Class<? extends APIMessage>> getMessagesNeedValidation() {
+        return messagesNeedValidation;
     }
 
-    public CheckQuotaForApiMessage getChecker() {
-        return checker;
+    public QuotaOperator getOperator() {
+        return operator;
     }
 
-    public void setChecker(CheckQuotaForApiMessage checker) {
-        this.checker = checker;
+    public void setOperator(QuotaOperator operator) {
+        this.operator = operator;
     }
 }

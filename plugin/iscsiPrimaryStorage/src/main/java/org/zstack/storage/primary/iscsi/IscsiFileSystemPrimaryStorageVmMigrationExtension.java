@@ -7,6 +7,7 @@ import org.zstack.core.db.DatabaseFacade;
 import org.zstack.core.db.SimpleQuery;
 import org.zstack.core.db.SimpleQuery.Op;
 import org.zstack.core.errorcode.ErrorFacade;
+import org.zstack.core.timeout.ApiTimeoutManager;
 import org.zstack.header.errorcode.ErrorCode;
 import org.zstack.header.errorcode.OperationFailureException;
 import org.zstack.header.host.HostConstant;
@@ -45,6 +46,8 @@ public class IscsiFileSystemPrimaryStorageVmMigrationExtension implements VmInst
     private DatabaseFacade dbf;
     @Autowired
     private ErrorFacade errf;
+    @Autowired
+    private ApiTimeoutManager timeoutMgr;
 
     @Override
     public String preMigrateVm(VmInstanceInventory inv, String destHostUuid) {
@@ -59,7 +62,7 @@ public class IscsiFileSystemPrimaryStorageVmMigrationExtension implements VmInst
             return null;
         }
 
-        boolean useVirtio = (ImagePlatform.Paravirtualization.toString().equals(inv.getPlatform()) || ImagePlatform.Linux.toString().equals(inv.getPlatform()))
+        boolean useVirtio = ImagePlatform.valueOf(inv.getPlatform()).isParaVirtualization()
                 && KVMSystemTags.VIRTIO_SCSI.hasTag(destHostUuid);
 
         if (useVirtio) {
@@ -85,6 +88,7 @@ public class IscsiFileSystemPrimaryStorageVmMigrationExtension implements VmInst
 
             KVMHostAsyncHttpCallMsg msg = new KVMHostAsyncHttpCallMsg();
             msg.setCommand(cmd);
+            msg.setCommandTimeout(timeoutMgr.getTimeout(cmd.getClass(), "5m"));
             msg.setPath(KVMConstant.KVM_LOGIN_ISCSI_PATH);
             msg.setHostUuid(destHostUuid);
             bus.makeTargetServiceIdByResourceUuid(msg, HostConstant.SERVICE_ID, destHostUuid);
@@ -137,6 +141,7 @@ public class IscsiFileSystemPrimaryStorageVmMigrationExtension implements VmInst
             KVMHostAsyncHttpCallMsg msg = new KVMHostAsyncHttpCallMsg();
             msg.setPath(KVMConstant.KVM_LOGOUT_ISCSI_PATH);
             msg.setCommand(cmd);
+            msg.setCommandTimeout(timeoutMgr.getTimeout(cmd.getClass(), "5m"));
             msgs.add(msg);
             msg.setHostUuid(hostUuid);
             bus.makeTargetServiceIdByResourceUuid(msg, HostConstant.SERVICE_ID, hostUuid);
@@ -171,10 +176,10 @@ public class IscsiFileSystemPrimaryStorageVmMigrationExtension implements VmInst
     }
 
     @Override
-    public void afterMigrateVm(VmInstanceInventory inv, String destHostUuid) {
+    public void afterMigrateVm(VmInstanceInventory inv, String srcHostUuid) {
         List<VolumeInventory> volumes = vmVolumes.get(inv.getUuid());
         if (volumes != null) {
-            logoutIscsiTarget(volumes, inv.getLastHostUuid());
+            logoutIscsiTarget(volumes, srcHostUuid);
         }
     }
 

@@ -7,12 +7,15 @@ import org.zstack.core.cloudbus.CloudBusListCallBack;
 import org.zstack.core.db.SimpleQuery;
 import org.zstack.core.db.SimpleQuery.Op;
 import org.zstack.core.errorcode.ErrorFacade;
-import org.zstack.core.workflow.*;
+import org.zstack.core.gc.GCFacade;
+import org.zstack.core.gc.TimeBasedGCPersistentContext;
+import org.zstack.core.thread.ChainTask;
+import org.zstack.core.thread.SyncTaskChain;
+import org.zstack.core.workflow.FlowChainBuilder;
+import org.zstack.core.workflow.ShareFlow;
 import org.zstack.header.cluster.ClusterVO;
 import org.zstack.header.cluster.ClusterVO_;
-import org.zstack.header.core.Completion;
-import org.zstack.header.core.NopeCompletion;
-import org.zstack.header.core.ReturnValueCompletion;
+import org.zstack.header.core.*;
 import org.zstack.header.core.workflow.*;
 import org.zstack.header.errorcode.ErrorCode;
 import org.zstack.header.host.*;
@@ -62,6 +65,8 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
     private ErrorFacade errf;
     @Autowired
     private NfsPrimaryStorageManager nfsMgr;
+    @Autowired
+    private GCFacade gcf;
 
     public NfsPrimaryStorage(PrimaryStorageVO vo) {
         super(vo);
@@ -88,6 +93,77 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
         } else {
             super.handleLocalMessage(msg);
         }
+    }
+
+    @Override
+    protected void handle(final APIReconnectPrimaryStorageMsg msg) {
+        thdf.chainSubmit(new ChainTask(msg) {
+            @Override
+            public String getSyncSignature() {
+                return String.format("reconnect-nfs-primary-storage-%s", self.getUuid());
+            }
+
+            @Override
+            public void run(final SyncTaskChain chain) {
+                final APIReconnectPrimaryStorageEvent evt = new APIReconnectPrimaryStorageEvent(msg.getId());
+                SimpleQuery<PrimaryStorageClusterRefVO> q = dbf.createQuery(PrimaryStorageClusterRefVO.class);
+                q.select(PrimaryStorageClusterRefVO_.clusterUuid);
+                q.add(PrimaryStorageClusterRefVO_.primaryStorageUuid, Op.EQ, self.getUuid());
+                List<String> cuuids = q.listValue();
+                if (cuuids.isEmpty()) {
+                    evt.setInventory(getSelfInventory());
+                    bus.publish(evt);
+                    chain.next();
+                    return;
+                }
+
+                class Result {
+                    List<ErrorCode> errors = new ArrayList<ErrorCode>();
+                    boolean success;
+                }
+
+                final Result ret = new Result();
+
+                final AsyncLatch latch = new AsyncLatch(cuuids.size(), new NoErrorCompletion(msg, chain) {
+                    @Override
+                    public void done() {
+                        if (ret.success) {
+                            self = dbf.reload(self);
+                            evt.setInventory(getSelfInventory());
+                        } else {
+                            evt.setErrorCode(errf.stringToOperationError(String.format("unable to connect the NFS primary storage," +
+                                    "errors are %s", ret.errors)));
+                        }
+
+                        bus.publish(evt);
+                        chain.next();
+                    }
+                });
+
+                PrimaryStorageInventory inv = getSelfInventory();
+                for (String cuuid : cuuids) {
+                    NfsPrimaryStorageBackend bkd = getBackendByClusterUuid(cuuid);
+                    bkd.remount(inv, cuuid, new Completion(latch) {
+                        @Override
+                        public void success() {
+                            ret.success = true;
+                            latch.ack();
+                        }
+
+                        @Override
+                        public void fail(ErrorCode errorCode) {
+                            ret.errors.add(errorCode);
+                            latch.ack();
+                        }
+                    });
+                }
+            }
+
+            @Override
+            public String getName() {
+                return getSyncSignature();
+            }
+        });
     }
 
     @Override
@@ -168,7 +244,7 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
                     }
 
                     @Override
-                    public void rollback(FlowTrigger trigger, Map data) {
+                    public void rollback(FlowRollback trigger, Map data) {
                         backend.delete(pinv, volumeInWorkSpacePath, new NopeCompletion());
                         trigger.rollback();
                     }
@@ -278,7 +354,7 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
                     }
 
                     @Override
-                    public void rollback(FlowTrigger trigger, Map data) {
+                    public void rollback(FlowRollback trigger, Map data) {
                         if (templateInstallPathOnPrimaryStorage != null) {
                             backend.delete(getSelfInventory(), templateInstallPathOnPrimaryStorage, new NopeCompletion());
                         }
@@ -333,7 +409,7 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
                     }
 
                     @Override
-                    public void rollback(FlowTrigger trigger, Map data) {
+                    public void rollback(FlowRollback trigger, Map data) {
                         if (!results.isEmpty()) {
                             List<DeleteBitsOnBackupStorageMsg> dmsgs = CollectionUtils.transformToList(results, new Function<DeleteBitsOnBackupStorageMsg, CreateTemplateFromVolumeSnapshotResult>() {
                                 @Override
@@ -464,8 +540,8 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
 
     private void handle(final DeleteSnapshotOnPrimaryStorageMsg msg) {
         final DeleteSnapshotOnPrimaryStorageReply reply = new DeleteSnapshotOnPrimaryStorageReply();
-        VolumeSnapshotInventory sinv = msg.getSnapshot();
-        NfsPrimaryStorageBackend bkd = getBackend(nfsMgr.findHypervisorTypeByImageFormatAndPrimaryStorageUuid(sinv.getFormat(), self.getUuid()));
+        final VolumeSnapshotInventory sinv = msg.getSnapshot();
+        final NfsPrimaryStorageBackend bkd = getBackend(nfsMgr.findHypervisorTypeByImageFormatAndPrimaryStorageUuid(sinv.getFormat(), self.getUuid()));
 
         bkd.delete(getSelfInventory(), sinv.getPrimaryStorageInstallPath(), new Completion(msg) {
             @Override
@@ -475,8 +551,22 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
 
             @Override
             public void fail(ErrorCode errorCode) {
-                //TODO: clean up
-                reply.setError(errorCode);
+                GCBitsDeletionContext c = new GCBitsDeletionContext();
+                c.setPrimaryStorageUuid(self.getUuid());
+                c.setSnapshot(sinv);
+                c.setHypervisorType(bkd.getHypervisorType().toString());
+
+                TimeBasedGCPersistentContext<GCBitsDeletionContext> ctx = new TimeBasedGCPersistentContext();
+                ctx.setContextClass(GCBitsDeletionContext.class);
+                ctx.setRunnerClass(GCBitsDeletionRunner.class);
+                ctx.setContext(c);
+                ctx.setInterval(NfsPrimaryStorageGlobalProperty.BITS_DELETION_GC_INTERVAL);
+                ctx.setName(String.format("nfs-gc-volume-snapshot-%s-%s", self.getUuid(), sinv.getUuid()));
+                gcf.schedule(ctx);
+
+                //TODO: alarm
+                logger.warn(String.format("failed to delete the volume snapshot[uuid:%s], %s. GC job is submitted",
+                        sinv.getUuid(), errorCode));
                 bus.reply(msg, reply);
             }
         });
@@ -754,7 +844,7 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
     protected void handle(final DeleteVolumeOnPrimaryStorageMsg msg) {
         final DeleteVolumeOnPrimaryStorageReply reply = new DeleteVolumeOnPrimaryStorageReply();
         final VolumeInventory vol = msg.getVolume();
-        NfsPrimaryStorageBackend backend = getBackend(nfsMgr.findHypervisorTypeByImageFormatAndPrimaryStorageUuid(vol.getFormat(), self.getUuid()));
+        final NfsPrimaryStorageBackend backend = getBackend(nfsMgr.findHypervisorTypeByImageFormatAndPrimaryStorageUuid(vol.getFormat(), self.getUuid()));
         String volumeFolder = PathUtil.parentFolder(vol.getInstallPath());
         backend.deleteFolder(getSelfInventory(), volumeFolder, new Completion(msg) {
             @Override
@@ -766,9 +856,23 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
 
             @Override
             public void fail(ErrorCode errorCode) {
-                //TODO: cleanup
-                logger.warn(errorCode.toString());
-                reply.setError(errorCode);
+                GCBitsDeletionContext c = new GCBitsDeletionContext();
+                c.setPrimaryStorageUuid(self.getUuid());
+                c.setVolume(vol);
+                c.setHypervisorType(backend.getHypervisorType().toString());
+
+                TimeBasedGCPersistentContext<GCBitsDeletionContext> ctx = new TimeBasedGCPersistentContext<GCBitsDeletionContext>();
+                ctx.setContext(c);
+                ctx.setRunnerClass(GCBitsDeletionRunner.class);
+                ctx.setContextClass(GCBitsDeletionContext.class);
+                ctx.setName(String.format("nfs-gc-volume-%s-%s", self.getUuid(), vol.getUuid()));
+                ctx.setInterval(NfsPrimaryStorageGlobalProperty.BITS_DELETION_GC_INTERVAL);
+                gcf.schedule(ctx);
+
+                //TODO: send alarm
+                logger.warn(String.format("failed to delete the volume[uuid:%s] on the nfs primary storage[uuid:%s], a GC job is submitted",
+                        vol.getUuid(), self.getUuid()));
+
                 bus.reply(msg, reply);
             }
         });
@@ -811,7 +915,7 @@ public class NfsPrimaryStorage extends PrimaryStorageBase {
                     }
 
                     @Override
-                    public void rollback(FlowTrigger trigger, Map data) {
+                    public void rollback(FlowRollback trigger, Map data) {
                         if (templatePrimaryStorageInstallPath != null) {
                             bkd.delete(pinv, templatePrimaryStorageInstallPath, new NopeCompletion());
                         }

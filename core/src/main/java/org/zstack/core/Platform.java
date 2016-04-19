@@ -1,6 +1,8 @@
 package org.zstack.core;
 
 import org.apache.commons.io.FileUtils;
+import org.springframework.beans.factory.BeanFactory;
+import org.springframework.context.MessageSource;
 import org.springframework.web.context.WebApplicationContext;
 import org.zstack.core.cloudbus.CloudBus;
 import org.zstack.core.componentloader.ComponentLoader;
@@ -11,7 +13,6 @@ import org.zstack.core.statemachine.StateMachine;
 import org.zstack.core.statemachine.StateMachineImpl;
 import org.zstack.header.Component;
 import org.zstack.header.exception.CloudRuntimeException;
-import org.zstack.header.tag.SystemTagVO;
 import org.zstack.utils.BeanUtils;
 import org.zstack.utils.Linux;
 import org.zstack.utils.StringDSL;
@@ -32,6 +33,10 @@ import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.util.*;
 
+import static org.zstack.utils.CollectionDSL.e;
+import static org.zstack.utils.CollectionDSL.map;
+import static org.zstack.utils.StringDSL.ln;
+
 public class Platform {
     private static final CLogger logger = CLoggerImpl.getLogger(Platform.class);
 
@@ -43,6 +48,10 @@ public class Platform {
     public static final String COMPONENT_CLASSPATH_HOME = "componentsHome";
 
     private static final Map<String, String> globalProperties = new HashMap<String, String>();
+
+    private static Locale locale;
+
+    public static volatile boolean IS_RUNNING = true;
 
     private static Map<String, String> linkGlobalPropertyMap(String prefix) {
         Map<String, String> ret = new HashMap<String, String>();
@@ -142,19 +151,21 @@ public class Platform {
             return ret;
         }
 
-        for (Map.Entry<String, String> e : map.entrySet()) {
-            String index = StringDSL.stripStart(e.getKey(), name).trim();
+        List<String> orderedKeys = new ArrayList<String>();
+        orderedKeys.addAll(map.keySet());
+        Collections.sort(orderedKeys);
+
+        for (String key : orderedKeys) {
+            String index = StringDSL.stripStart(key, name).trim();
             try {
-                int i = Integer.valueOf(index);
-                if (i >= map.size()) {
-                    throw new IllegalArgumentException(String.format("[Illegal List Definition] %s is not a correct list definition, its index is %s, but total items are %s. Max index is size of items minus 1",
-                            e.getKey(), i, map.size()));
-                }
-                ret.add(i, e.getValue());
-            } catch (Exception ex) {
-                throw new IllegalArgumentException(String.format("[Illegal List Definition] %s is not a correct list definition, the end character must be a number, for example %s.1",
-                        e.getKey(), name), ex);
+                Long.valueOf(index);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(String.format("[Illegal List Definition] %s is an invalid list key" +
+                        " definition, the last character must be a number, for example %s1. %s is not a number", key, key, index));
+
             }
+
+            ret.add(map.get(key));
         }
 
         return ret;
@@ -209,12 +220,28 @@ public class Platform {
             }
 
             if (getGlobalProperty("DbFacadeDataSource.jdbcUrl") == null) {
-                String url = String.format("%s/zstack", dbUrl);
+                String url;
+                if (dbUrl.contains("{database}")) {
+                    url = ln(dbUrl).formatByMap(
+                            map(e("database", "zstack"))
+                    );
+                } else {
+                    url = String.format("%s/zstack", dbUrl);
+                }
+
                 System.setProperty("DbFacadeDataSource.jdbcUrl", url);
                 logger.debug(String.format("default DbFacadeDataSource.jdbcUrl to DB.url [%s]", url));
             }
             if (getGlobalProperty("RESTApiDataSource.jdbcUrl") == null) {
-                String url = String.format("%s/zstack_rest", dbUrl);
+                String url;
+                if (dbUrl.contains("{database}")) {
+                    url = ln(dbUrl).formatByMap(
+                            map(e("database", "zstack_rest"))
+                    );
+                } else {
+                    url = String.format("%s/zstack_rest", dbUrl);
+                }
+
                 System.setProperty("RESTApiDataSource.jdbcUrl", url);
                 logger.debug(String.format("default RESTApiDataSource.jdbcUrl to DB.url [%s]", url));
             }
@@ -270,12 +297,12 @@ public class Platform {
     }
 
     static {
-        msId = getUuid();
-
-        // TODO: get code version from MANIFEST file
-        codeVersion = "0.1.0";
-
         try {
+            msId = getUuid();
+
+            // TODO: get code version from MANIFEST file
+            codeVersion = "0.1.0";
+
             File globalPropertiesFile = PathUtil.findFileOnClassPath("zstack.properties", true);
             FileInputStream in = new FileInputStream(globalPropertiesFile);
             System.getProperties().load(in);
@@ -283,7 +310,10 @@ public class Platform {
             linkGlobalProperty();
             prepareDefaultDbProperties();
             writePidFile();
-        } catch (Exception e) {
+
+            locale = new Locale(CoreGlobalProperty.LOCALE);
+        } catch (Throwable e) {
+            logger.warn(String.format("unhandled exception when in Platform's static block, %s", e.getMessage()), e);
             throw new RuntimeException(e);
         }
     }
@@ -383,7 +413,7 @@ public class Platform {
 		/*
 		 * This part cannot be moved to static block at the beginning.
 		 * Because component code loaded by Spring may call other functions in Platform which
-		 * causes the static block to be executed, and results in cycle initialization of ComponentLoaderImpl.
+		 * causes the static block to be executed, which results in cycle initialization of ComponentLoaderImpl.
 		 */
         if (loader == null) {
             loader = createComponentLoaderFromWebApplicationContext(null);
@@ -460,5 +490,28 @@ public class Platform {
         logger.info(String.format("get management IP[%s] from default route[/sbin/ip route]", ip));
         managementServerIp = ip;
         return managementServerIp;
+    }
+
+    public static String _(String code, Object...args) {
+        if (loader == null) {
+            throw new CloudRuntimeException("ComponentLoader is null. i18n has not been initialized, you call it too early");
+        }
+
+        BeanFactory beanFactory = loader.getSpringIoc();
+        if (beanFactory == null) {
+            throw new CloudRuntimeException("BeanFactory is null. i18n has not been initialized, you call it too early");
+        }
+
+        if (!(beanFactory instanceof MessageSource)) {
+            throw new CloudRuntimeException("BeanFactory is not a spring MessageSource. i18n cannot be used");
+        }
+
+        MessageSource source = (MessageSource)beanFactory;
+
+        if (args.length > 0) {
+            return source.getMessage(code, args, locale);
+        } else {
+            return source.getMessage(code, null, locale);
+        }
     }
 }

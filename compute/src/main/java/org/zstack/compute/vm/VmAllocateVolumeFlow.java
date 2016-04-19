@@ -8,6 +8,7 @@ import org.zstack.core.cloudbus.CloudBusListCallBack;
 import org.zstack.core.db.DatabaseFacade;
 import org.zstack.core.errorcode.ErrorFacade;
 import org.zstack.header.core.workflow.Flow;
+import org.zstack.header.core.workflow.FlowRollback;
 import org.zstack.header.core.workflow.FlowTrigger;
 import org.zstack.header.errorcode.ErrorCode;
 import org.zstack.header.exception.CloudRuntimeException;
@@ -59,7 +60,7 @@ public class VmAllocateVolumeFlow implements Flow {
                     msg.setFormat(imageFormat.getOutputFormat(spec.getDestHost().getHypervisorType()));
                 }
             } else {
-                msg.setName("DATA");
+                msg.setName(String.format("DATA-for-%s", spec.getVmInventory().getName()));
                 msg.setDescription(String.format("DataVolume-%s", spec.getVmInventory().getUuid()));
                 msg.setFormat(VolumeFormat.getVolumeFormatByMasterHypervisorType(spec.getDestHost().getHypervisorType()).toString());
             }
@@ -86,6 +87,8 @@ public class VmAllocateVolumeFlow implements Flow {
             public void run(List<MessageReply> replies) {
                 ErrorCode err = null;
                 for (MessageReply r : replies) {
+                    VolumeSpec vspec = spec.getVolumeSpecs().get(replies.indexOf(r));
+
                     if (r.isSuccess()) {
                         CreateVolumeReply cr = r.castReply();
                         VolumeInventory inv = cr.getInventory();
@@ -94,8 +97,11 @@ public class VmAllocateVolumeFlow implements Flow {
                         } else {
                             spec.getDestDataVolumes().add(inv);
                         }
+
+                        vspec.setIsVolumeCreated(true);
                     } else {
                         err = r.getError();
+                        vspec.setIsVolumeCreated(false);
                     }
                 }
 
@@ -109,7 +115,7 @@ public class VmAllocateVolumeFlow implements Flow {
     }
 
     @Override
-    public void rollback(final FlowTrigger chain, Map data) {
+    public void rollback(final FlowRollback chain, Map data) {
         VmInstanceSpec spec = (VmInstanceSpec) data.get(VmInstanceConstant.Params.VmInstanceSpec.toString());
         List<VolumeInventory> destVolumes = new ArrayList<VolumeInventory>(spec.getDestDataVolumes().size() + 1);
         if (spec.getDestRootVolume() != null) {

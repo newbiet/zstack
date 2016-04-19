@@ -19,8 +19,8 @@
             <zstack:extension
                 interface="org.zstack.header.cluster.ClusterChangeStateExtensionPoint"
                 instance-ref="HostExtensionToCluster" />
-            <zstack:extension
-                interface="org.zstack.header.managementnode.ManagementNodeChangeListener" />
+            <zstack:extension interface="org.zstack.header.managementnode.ManagementNodeChangeListener" />
+            <zstack:extension interface="org.zstack.header.managementnode.ManagementNodeReadyExtensionPoint" />
         </zstack:plugin>
     </bean>
 
@@ -43,12 +43,6 @@
     <bean id="HostApiInterceptor" class="org.zstack.compute.host.HostApiInterceptor">
         <zstack:plugin>
             <zstack:extension interface="org.zstack.header.apimediator.ApiMessageInterceptor" />
-        </zstack:plugin>
-    </bean>
-
-    <bean id="HostNotifyPointEmitter" class="org.zstack.compute.host.HostNotifyPointEmitter">
-        <zstack:plugin>
-            <zstack:extension interface="org.zstack.header.Component" />
         </zstack:plugin>
     </bean>
 

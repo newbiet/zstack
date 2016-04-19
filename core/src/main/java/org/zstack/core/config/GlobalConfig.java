@@ -10,8 +10,10 @@ import org.zstack.core.config.GlobalConfigCanonicalEvents.UpdateEvent;
 import org.zstack.core.db.DatabaseFacade;
 import org.zstack.core.db.SimpleQuery;
 import org.zstack.core.db.SimpleQuery.Op;
+import org.zstack.utils.CollectionUtils;
 import org.zstack.utils.TypeUtils;
 import org.zstack.utils.Utils;
+import org.zstack.utils.function.ForEachFunction;
 import org.zstack.utils.gson.JSONObjectUtil;
 import org.zstack.utils.logging.CLogger;
 
@@ -39,6 +41,8 @@ public class GlobalConfig {
     private boolean linked;
     private transient List<GlobalConfigUpdateExtensionPoint> updateExtensions = new ArrayList<GlobalConfigUpdateExtensionPoint>();
     private transient List<GlobalConfigValidatorExtensionPoint> validators = new ArrayList<GlobalConfigValidatorExtensionPoint>();
+    private transient List<GlobalConfigUpdateExtensionPoint> localUpdateExtensions = new ArrayList<GlobalConfigUpdateExtensionPoint>();
+    private GlobalConfigDef configDef;
 
     @Autowired
     private DatabaseFacade dbf;
@@ -72,6 +76,10 @@ public class GlobalConfig {
                 e("category", category),
                 e("name", name)
         ));
+    }
+
+    public void installLocalUpdateExtension(GlobalConfigUpdateExtensionPoint ext) {
+        localUpdateExtensions.add(ext);
     }
 
     public void installUpdateExtension(GlobalConfigUpdateExtensionPoint ext) {
@@ -229,13 +237,21 @@ public class GlobalConfig {
         q.add(GlobalConfigVO_.category, Op.EQ, category);
         q.add(GlobalConfigVO_.name, Op.EQ, name);
         GlobalConfigVO vo = q.find();
-        GlobalConfig origin = valueOf(vo);
+        final GlobalConfig origin = valueOf(vo);
 
         value = newValue;
 
         if (localUpdate) {
             vo.setValue(newValue);
             dbf.update(vo);
+
+            final GlobalConfig self = this;
+            CollectionUtils.safeForEach(localUpdateExtensions, new ForEachFunction<GlobalConfigUpdateExtensionPoint>() {
+                @Override
+                public void run(GlobalConfigUpdateExtensionPoint ext) {
+                    ext.updateGlobalConfig(origin, self);
+                }
+            });
         }
 
         for (GlobalConfigUpdateExtensionPoint ext : updateExtensions) {
@@ -275,6 +291,14 @@ public class GlobalConfig {
 
     public boolean isMe(GlobalConfig other) {
         return category.equals(other.getCategory()) && name.equals(other.getName());
+    }
+
+    public GlobalConfigDef getConfigDef() {
+        return configDef;
+    }
+
+    public void setConfigDef(GlobalConfigDef configDef) {
+        this.configDef = configDef;
     }
 
     public String getCanonicalName() {

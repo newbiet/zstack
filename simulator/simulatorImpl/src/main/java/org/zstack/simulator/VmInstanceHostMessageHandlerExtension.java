@@ -96,15 +96,21 @@ public class VmInstanceHostMessageHandlerExtension implements HostMessageHandler
             reply.setError(errf.stringToOperationError("on purpose"));
         } else {
             logger.debug(String.format("Successfully migrate vm[uuid:%s] on simulator host[uuid:%s] to host[uuid:%s]", msg.getVmInventory().getUuid(), host.getSimulatorHostVO().getUuid(), msg.getDestHostInventory().getUuid()));
-            host.removeVm(msg.getVmInventory().getUuid());
+            synchronized (config) {
+                config.removeVm(msg.getSrcHostUuid(), msg.getVmInventory().getUuid());
+                config.putVm(msg.getDestHostInventory().getUuid(), msg.getVmInventory().getUuid(), VmInstanceState.Running);
+            }
+            bus.reply(msg, reply);
 
+            /*
             // add vm on new simulator host to emulate migration
             ChangeVmStateOnSimulatorHostMsg cmsg = new ChangeVmStateOnSimulatorHostMsg();
             cmsg.setHostUuid(msg.getDestHostInventory().getUuid());
-            cmsg.setVmUuid(msg.getVmInventory().getUuid());
+            cmsg.setVmUuid(msg.getInventory().getUuid());
             cmsg.setVmState(VmInstanceState.Running.toString());
             bus.makeTargetServiceIdByResourceUuid(cmsg, HostConstant.SERVICE_ID, cmsg.getHostUuid());
             bus.send(cmsg);
+            */
         }
 
         bus.reply(msg, reply);

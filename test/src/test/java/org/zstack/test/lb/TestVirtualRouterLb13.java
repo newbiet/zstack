@@ -23,6 +23,7 @@ import org.zstack.test.WebBeanConstructor;
 import org.zstack.test.deployer.Deployer;
 import org.zstack.utils.CollectionUtils;
 import org.zstack.utils.function.Function;
+import org.zstack.utils.gson.JSONObjectUtil;
 
 import static org.zstack.utils.CollectionDSL.e;
 import static org.zstack.utils.CollectionDSL.list;
@@ -227,17 +228,22 @@ public class TestVirtualRouterLb13 {
         final String ns7 = LoadBalancerSystemTags.BALANCER_ALGORITHM.instantiateTag(
                 map(e(LoadBalancerSystemTags.BALANCER_ALGORITHM_TOKEN, BALANCER_ALGORITHM))
         );
-        String HEALTH_TARGET = "TCP:5000";
+        String HEALTH_TARGET = "tcp:5000";
         final String ns8 = LoadBalancerSystemTags.HEALTH_TARGET.instantiateTag(
                 map(e(LoadBalancerSystemTags.HEALTH_TARGET_TOKEN, HEALTH_TARGET))
         );
 
         vconfig.refreshLbCmds.clear();
-        LoadBalancerListenerInventory l2 = api.createLoadBalancerListener(l, list(ns1, ns2, ns3, ns4, ns5, ns6, ns7, ns8), null);
+        final LoadBalancerListenerInventory l2 = api.createLoadBalancerListener(l, list(ns1, ns2, ns3, ns4, ns5, ns6, ns7, ns8), null);
         api.addVmNicToLoadBalancerListener(l2.getUuid(), nic.getUuid());
 
         cmd = vconfig.refreshLbCmds.get(0);
-        to = cmd.getLbs().get(0);
+        to = CollectionUtils.find(cmd.getLbs(), new Function<LbTO, LbTO>() {
+            @Override
+            public LbTO call(LbTO arg) {
+                return arg.getListenerUuid().equals(l2.getUuid()) ? arg : null;
+            }
+        });
         String ss1 = LoadBalancerSystemTags.CONNECTION_IDLE_TIMEOUT.getTokenByResourceUuid(l.getUuid(), LoadBalancerSystemTags.CONNECTION_IDLE_TIMEOUT_TOKEN);
         val = Long.valueOf(ss1);
         Assert.assertEquals(CONNECTION_IDLE_TIMEOUT, val);
@@ -247,7 +253,7 @@ public class TestVirtualRouterLb13 {
                 return arg.equals(ns1) ? arg : null;
             }
         });
-        Assert.assertNotNull(tval);
+        Assert.assertNotNull(JSONObjectUtil.toJsonString(to), tval);
 
         String ss2 = LoadBalancerSystemTags.HEALTH_INTERVAL.getTokenByResourceUuid(l.getUuid(), LoadBalancerSystemTags.HEALTH_INTERVAL_TOKEN);
         val = Long.valueOf(ss2);

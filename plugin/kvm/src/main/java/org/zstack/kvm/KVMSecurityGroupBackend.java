@@ -4,7 +4,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.zstack.core.cloudbus.CloudBus;
 import org.zstack.core.cloudbus.CloudBusCallBack;
 import org.zstack.core.errorcode.ErrorFacade;
+import org.zstack.core.timeout.ApiTimeoutManager;
 import org.zstack.header.core.Completion;
+import org.zstack.header.core.workflow.Flow;
+import org.zstack.header.core.workflow.FlowTrigger;
+import org.zstack.header.core.workflow.NoRollbackFlow;
 import org.zstack.header.host.HostConstant;
 import org.zstack.header.host.HypervisorType;
 import org.zstack.header.message.MessageReply;
@@ -15,6 +19,8 @@ import org.zstack.kvm.KVMAgentCommands.RefreshAllRulesOnHostCmd;
 import org.zstack.network.securitygroup.*;
 import org.zstack.utils.Utils;
 import org.zstack.utils.logging.CLogger;
+
+import java.util.Map;
 
 public class KVMSecurityGroupBackend implements SecurityGroupHypervisorBackend, KVMHostConnectExtensionPoint {
     private static CLogger logger = Utils.getLogger(KVMSecurityGroupBackend.class);
@@ -27,6 +33,8 @@ public class KVMSecurityGroupBackend implements SecurityGroupHypervisorBackend, 
     private CloudBus bus;
     @Autowired
     private ErrorFacade errf;
+    @Autowired
+    private ApiTimeoutManager timeoutMgr;
 
     private void incrementallyApplyRules(final HostRuleTO hto, final Completion complete) {
         ApplySecurityGroupRuleCmd cmd = new ApplySecurityGroupRuleCmd();
@@ -36,6 +44,7 @@ public class KVMSecurityGroupBackend implements SecurityGroupHypervisorBackend, 
         msg.setHostUuid(hto.getHostUuid());
         msg.setPath(SECURITY_GROUP_APPLY_RULE_PATH);
         msg.setCommand(cmd);
+        msg.setCommandTimeout(timeoutMgr.getTimeout(cmd.getClass(), "5m"));
         bus.makeTargetServiceIdByResourceUuid(msg, HostConstant.SERVICE_ID, hto.getHostUuid());
         bus.send(msg, new CloudBusCallBack(complete) {
             @Override
@@ -69,6 +78,7 @@ public class KVMSecurityGroupBackend implements SecurityGroupHypervisorBackend, 
         msg.setHostUuid(hto.getHostUuid());
         msg.setPath(SECURITY_GROUP_REFRESH_RULE_ON_HOST_PATH);
         msg.setCommand(cmd);
+        msg.setCommandTimeout(timeoutMgr.getTimeout(cmd.getClass(), "5m"));
         msg.setNoStatusCheck(true);
         bus.makeTargetServiceIdByResourceUuid(msg, HostConstant.SERVICE_ID, hto.getHostUuid());
         bus.send(msg, new CloudBusCallBack(complete) {
@@ -110,6 +120,7 @@ public class KVMSecurityGroupBackend implements SecurityGroupHypervisorBackend, 
         KVMHostAsyncHttpCallMsg msg = new KVMHostAsyncHttpCallMsg();
         msg.setHostUuid(hostUuid);
         msg.setCommand(cmd);
+        msg.setCommandTimeout(timeoutMgr.getTimeout(cmd.getClass(), "5m"));
         msg.setPath(SECURITY_GROUP_CLEANUP_UNUSED_RULE_ON_HOST_PATH);
         bus.makeTargetServiceIdByResourceUuid(msg, HostConstant.SERVICE_ID, hostUuid);
         bus.send(msg, new CloudBusCallBack(completion) {
@@ -138,10 +149,18 @@ public class KVMSecurityGroupBackend implements SecurityGroupHypervisorBackend, 
     }
 
     @Override
-    public void kvmHostConnected(KVMHostConnectedContext context) throws KVMHostConnectException {
-        RefreshSecurityGroupRulesOnHostMsg msg = new RefreshSecurityGroupRulesOnHostMsg();
-        msg.setHostUuid(context.getInventory().getUuid());
-        bus.makeLocalServiceId(msg, SecurityGroupConstant.SERVICE_ID);
-        bus.send(msg);
+    public Flow createKvmHostConnectingFlow(final KVMHostConnectedContext context) {
+        return new NoRollbackFlow() {
+            String __name__ = "refresh-security-group-on-host";
+
+            @Override
+            public void run(FlowTrigger trigger, Map data) {
+                RefreshSecurityGroupRulesOnHostMsg msg = new RefreshSecurityGroupRulesOnHostMsg();
+                msg.setHostUuid(context.getInventory().getUuid());
+                bus.makeLocalServiceId(msg, SecurityGroupConstant.SERVICE_ID);
+                bus.send(msg);
+                trigger.next();
+            }
+        };
     }
 }

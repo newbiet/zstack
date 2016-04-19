@@ -3,8 +3,7 @@ package org.zstack.compute.allocator;
 import org.springframework.beans.factory.annotation.Autowire;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Configurable;
-import org.springframework.transaction.annotation.Transactional;
-import org.zstack.core.db.DatabaseFacade;
+import org.zstack.core.componentloader.PluginRegistry;
 import org.zstack.core.errorcode.ErrorFacade;
 import org.zstack.header.allocator.*;
 import org.zstack.header.core.ReturnValueCompletion;
@@ -18,7 +17,6 @@ import org.zstack.utils.Utils;
 import org.zstack.utils.gson.JSONObjectUtil;
 import org.zstack.utils.logging.CLogger;
 
-import javax.persistence.LockModeType;
 import java.util.*;
 
 /**
@@ -47,7 +45,9 @@ public class HostAllocatorChain implements HostAllocatorTrigger, HostAllocatorSt
     @Autowired
     private ErrorFacade errf;
     @Autowired
-    private DatabaseFacade dbf;
+    private PluginRegistry pluginRgty;
+    @Autowired
+    private HostCapacityOverProvisioningManager ratioMgr;
 
     public HostAllocatorSpec getAllocationSpec() {
         return allocationSpec;
@@ -73,25 +73,28 @@ public class HostAllocatorChain implements HostAllocatorTrigger, HostAllocatorSt
         this.flows = flows;
     }
 
-    @Transactional
-    private boolean reserveCapacity(String hostUuid, long cpu, long memory) {
-        HostCapacityVO vo = dbf.getEntityManager().find(HostCapacityVO.class, hostUuid, LockModeType.PESSIMISTIC_WRITE);
-        if (vo == null) {
-            return false;
-        }
-        long availCpu = vo.getAvailableCpu() - cpu;
-        if (availCpu <= 0) {
-            return false;
-        }
-        vo.setAvailableCpu(availCpu);
+    void reserveCapacity(final String hostUuid, final long cpu, final long memory) {
+        HostCapacityUpdater updater = new HostCapacityUpdater(hostUuid);
+        updater.run(new HostCapacityUpdaterRunnable() {
+            @Override
+            public HostCapacityVO call(HostCapacityVO cap) {
+                long availCpu = cap.getAvailableCpu() - cpu;
+                if (availCpu < 0) {
+                    throw new UnableToReserveHostCapacityException(String.format("no enough CPU[%s] on the host[uuid:%s]", cpu, hostUuid));
+                }
 
-        long availMemory = vo.getAvailableMemory() - memory;
-        if (availMemory <=0) {
-            return false;
-        }
-        vo.setAvailableMemory(availMemory);
-        dbf.getEntityManager().merge(vo);
-        return true;
+                cap.setAvailableCpu(availCpu);
+
+                long availMemory = cap.getAvailableMemory() - ratioMgr.calculateMemoryByRatio(hostUuid, memory);
+                if (availMemory < 0) {
+                    throw new UnableToReserveHostCapacityException(String.format("no enough memory[%s] on the host[uuid:%s]", memory, hostUuid));
+                }
+
+                cap.setAvailableMemory(availMemory);
+
+                return cap;
+            }
+        });
     }
 
     protected void marshalResult() {
@@ -132,19 +135,20 @@ public class HostAllocatorChain implements HostAllocatorTrigger, HostAllocatorSt
 
         try {
             for (HostVO h : result) {
-                if (reserveCapacity(h.getUuid(), allocationSpec.getCpuCapacity(), allocationSpec.getMemoryCapacity())) {
+                try {
+                    reserveCapacity(h.getUuid(), allocationSpec.getCpuCapacity(), allocationSpec.getMemoryCapacity());
                     logger.debug(String.format("[Host Allocation]: successfully reserved cpu[%s HZ], memory[%s bytes] on host[uuid:%s] for vm[uuid:%s]",
                             allocationSpec.getCpuCapacity(), allocationSpec.getMemoryCapacity(), h.getUuid(), allocationSpec.getVmInstance().getUuid()));
                     completion.success(HostInventory.valueOf(h));
                     return;
-                } else {
-                    logger.debug(String.format("[Host Allocation]: unable to reserve cpu[%s HZ], memory[%s bytes] on host[uuid:%s]. try next one",
-                            allocationSpec.getCpuCapacity(), allocationSpec.getMemoryCapacity(), h.getUuid()));
+                } catch (UnableToReserveHostCapacityException e) {
+                    logger.debug(String.format("[Host Allocation]: %s on host[uuid:%s]. try next one",
+                            e.getMessage(), h.getUuid()));
                 }
             }
 
             if (paginationInfo != null) {
-                logger.debug(String.format("[Host Allocation]: unable to reserve cpu/memory on all candidate hosts; because of pagination is enabled, allocation will start over"));
+                logger.debug("[Host Allocation]: unable to reserve cpu/memory on all candidate hosts; because of pagination is enabled, allocation will start over");
                 seriesErrorWhenPagination.add(String.format("{unable to reserve cpu[%s HZ], memory[%s bytes] on all candidate hosts}", allocationSpec.getCpuCapacity(), allocationSpec.getMemoryCapacity()));
                 startOver();
             } else {
@@ -186,6 +190,10 @@ public class HostAllocatorChain implements HostAllocatorTrigger, HostAllocatorSt
     }
 
     private void start() {
+        for (HostAllocatorPreStartExtensionPoint processor : pluginRgty.getExtensionList(HostAllocatorPreStartExtensionPoint.class)) {
+            processor.beforeHostAllocatorStart(allocationSpec, flows);
+        }
+
         if (HostAllocatorGlobalConfig.USE_PAGINATION.value(Boolean.class)) {
             paginationInfo = new HostAllocationPaginationInfo();
             paginationInfo.setLimit(HostAllocatorGlobalConfig.PAGINATION_LIMIT.value(Integer.class));
@@ -221,6 +229,18 @@ public class HostAllocatorChain implements HostAllocatorTrigger, HostAllocatorSt
             }
             logger.trace(sb.toString());
         }
+
+        if (it.hasNext()) {
+            runFlow(it.next());
+            return;
+        }
+
+        done();
+    }
+
+    @Override
+    public void skip() {
+        logger.debug(String.format("[Host Allocation]: flow[%s] asks to skip itself, we are running to the next flow", lastFlow.getClass()));
 
         if (it.hasNext()) {
             runFlow(it.next());

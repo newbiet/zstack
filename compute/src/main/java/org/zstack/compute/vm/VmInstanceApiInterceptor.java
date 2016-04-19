@@ -30,6 +30,7 @@ import org.zstack.header.vm.*;
 import org.zstack.header.zone.ZoneState;
 import org.zstack.header.zone.ZoneVO;
 import org.zstack.header.zone.ZoneVO_;
+import org.zstack.utils.network.NetworkUtils;
 
 import javax.persistence.Tuple;
 import javax.persistence.TypedQuery;
@@ -69,10 +70,71 @@ public class VmInstanceApiInterceptor implements ApiMessageInterceptor {
             validate((APIDetachL3NetworkFromVmMsg) msg);
         } else if (msg instanceof APIAttachL3NetworkToVmMsg) {
             validate((APIAttachL3NetworkToVmMsg) msg);
+        } else if (msg instanceof APIAttachIsoToVmInstanceMsg) {
+            validate((APIAttachIsoToVmInstanceMsg) msg);
+        } else if (msg instanceof APISetVmBootOrderMsg) {
+            validate((APISetVmBootOrderMsg) msg);
+        } else if (msg instanceof APIDeleteVmStaticIpMsg) {
+            validate((APIDeleteVmStaticIpMsg) msg);
+        } else if (msg instanceof APISetVmStaticIpMsg) {
+            validate((APISetVmStaticIpMsg) msg);
         }
 
         setServiceId(msg);
         return msg;
+    }
+
+    private void validate(APISetVmStaticIpMsg msg) {
+        if (!NetworkUtils.isIpv4Address(msg.getIp())) {
+            throw new ApiMessageInterceptionException(errf.stringToInvalidArgumentError(
+                    String.format("%s is not a valid IPv4 address", msg.getIp()))
+            );
+        }
+
+        SimpleQuery<VmNicVO> q = dbf.createQuery(VmNicVO.class);
+        q.add(VmNicVO_.vmInstanceUuid, Op.EQ, msg.getVmInstanceUuid());
+        q.add(VmNicVO_.l3NetworkUuid, Op.EQ, msg.getL3NetworkUuid());
+        if (!q.isExists()) {
+            throw new ApiMessageInterceptionException(errf.stringToInvalidArgumentError(
+                    String.format("the VM[uuid:%s] has no nic on the L3 network[uuid:%s]", msg.getVmInstanceUuid(),
+                            msg.getL3NetworkUuid())
+            ));
+        }
+    }
+
+    private void validate(APIDeleteVmStaticIpMsg msg) {
+        SimpleQuery<VmNicVO> q = dbf.createQuery(VmNicVO.class);
+        q.add(VmNicVO_.vmInstanceUuid, Op.EQ, msg.getVmInstanceUuid());
+        q.add(VmNicVO_.l3NetworkUuid, Op.EQ, msg.getL3NetworkUuid());
+        if (!q.isExists()) {
+            throw new ApiMessageInterceptionException(errf.stringToInvalidArgumentError(
+                    String.format("the VM[uuid:%s] has no nic on the L3 network[uuid:%s]", msg.getVmInstanceUuid(),
+                            msg.getL3NetworkUuid())
+            ));
+        }
+    }
+
+    private void validate(APISetVmBootOrderMsg msg) {
+        if (msg.getBootOrder() != null) {
+            for (String o : msg.getBootOrder()) {
+                try {
+                    VmBootDevice.valueOf(o);
+                } catch (IllegalArgumentException e) {
+                    throw new ApiMessageInterceptionException(errf.stringToInvalidArgumentError(
+                            String.format("invalid boot device[%s] in boot order%s", o, msg.getBootOrder())
+                    ));
+                }
+            }
+        }
+    }
+
+    private void validate(APIAttachIsoToVmInstanceMsg msg) {
+        String isoUuid = VmSystemTags.ISO.getTokenByResourceUuid(msg.getVmInstanceUuid(), VmSystemTags.ISO_TOKEN);
+        if (isoUuid != null) {
+            throw new ApiMessageInterceptionException(errf.stringToOperationError(
+                    String.format("VM[uuid:%s] already has an ISO[uuid:%s] attached", msg.getVmInstanceUuid(), isoUuid)
+            ));
+        }
     }
 
     private void validate(APIAttachL3NetworkToVmMsg msg) {
@@ -106,12 +168,19 @@ public class VmInstanceApiInterceptor implements ApiMessageInterceptor {
         }
 
         SimpleQuery<L3NetworkVO> l3q = dbf.createQuery(L3NetworkVO.class);
-        l3q.select(L3NetworkVO_.state);
+        l3q.select(L3NetworkVO_.state, L3NetworkVO_.system);
         l3q.add(L3NetworkVO_.uuid, Op.EQ, msg.getL3NetworkUuid());
-        L3NetworkState l3state = l3q.findValue();
+        t = l3q.findTuple();
+        L3NetworkState l3state = t.get(0, L3NetworkState.class);
+        boolean system = t.get(1, Boolean.class);
         if (l3state == L3NetworkState.Disabled) {
             throw new ApiMessageInterceptionException(errf.stringToOperationError(
                     String.format("unable to attach a L3 network. The L3 network[uuid:%s] is disabled", msg.getL3NetworkUuid())
+            ));
+        }
+        if (system) {
+            throw new ApiMessageInterceptionException(errf.stringToOperationError(
+                    String.format("unable to attach a L3 network. The L3 network[uuid:%s] is a system network", msg.getL3NetworkUuid())
             ));
         }
     }

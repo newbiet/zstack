@@ -4,4 +4,8 @@
     <TestCase class="org.zstack.test.storage.primary.nfs.TestImageCacheMissing"/>
     <TestCase class="org.zstack.test.storage.primary.nfs.TestImageCacheMissingFailure"/>
     <TestCase class="org.zstack.test.storage.primary.nfs.TestDeleteNfsPrimaryStorage"/>
+    <TestCase class="org.zstack.test.storage.primary.nfs.TestReconnectNfsPrimaryStorage1"/>
+    <TestCase class="org.zstack.test.storage.primary.nfs.TestReconnectNfsPrimaryStorage2"/>
+    <TestCase class="org.zstack.test.storage.primary.nfs.TestReconnectNfsPrimaryStorage3"/>
+    <TestCase class="org.zstack.test.storage.primary.nfs.TestNfsMountOptions1"/>
 </UnitTestSuiteConfig>

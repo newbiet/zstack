@@ -4,15 +4,18 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.zstack.core.cloudbus.CloudBus;
 import org.zstack.core.cloudbus.CloudBusCallBack;
 import org.zstack.core.errorcode.ErrorFacade;
+import org.zstack.core.timeout.ApiTimeoutManager;
 import org.zstack.header.core.Completion;
 import org.zstack.header.core.NoErrorCompletion;
 import org.zstack.header.core.ReturnValueCompletion;
 import org.zstack.header.errorcode.ErrorCode;
+import org.zstack.header.exception.CloudRuntimeException;
 import org.zstack.header.message.MessageReply;
 import org.zstack.header.network.service.DhcpStruct;
 import org.zstack.header.network.service.NetworkServiceDhcpBackend;
 import org.zstack.header.network.service.NetworkServiceProviderType;
 import org.zstack.header.vm.VmInstanceConstant;
+import org.zstack.header.vm.VmInstanceInventory;
 import org.zstack.header.vm.VmInstanceSpec;
 import org.zstack.header.vm.VmNicInventory;
 import org.zstack.network.service.virtualrouter.*;
@@ -36,6 +39,8 @@ public class VirtualRouterDhcpBackend implements NetworkServiceDhcpBackend {
     private ErrorFacade errf;
     @Autowired
     private CloudBus bus;
+    @Autowired
+    private ApiTimeoutManager apiTimeoutManager;
 
     @Override
     public NetworkServiceProviderType getProviderType() {
@@ -76,6 +81,7 @@ public class VirtualRouterDhcpBackend implements NetworkServiceDhcpBackend {
                 cmd.setDhcpEntries(Arrays.asList(e));
                 VirtualRouterAsyncHttpCallMsg cmsg = new VirtualRouterAsyncHttpCallMsg();
                 cmsg.setCommand(cmd);
+                cmsg.setCommandTimeout(apiTimeoutManager.getTimeout(cmd.getClass(), "5m"));
                 cmsg.setPath(VirtualRouterConstant.VR_ADD_DHCP_PATH);
                 cmsg.setVmInstanceUuid(vr.getUuid());
                 cmsg.setCheckStatus(true);
@@ -159,6 +165,7 @@ public class VirtualRouterDhcpBackend implements NetworkServiceDhcpBackend {
         msg.setVmInstanceUuid(vr.getUuid());
         msg.setPath(VirtualRouterConstant.VR_REMOVE_DHCP_PATH);
         msg.setCommand(cmd);
+        msg.setCommandTimeout(apiTimeoutManager.getTimeout(cmd.getClass(), "5m"));
         bus.makeTargetServiceIdByResourceUuid(msg, VmInstanceConstant.SERVICE_ID, vr.getUuid());
         bus.send(msg, new CloudBusCallBack(completion) {
             @Override
@@ -192,5 +199,10 @@ public class VirtualRouterDhcpBackend implements NetworkServiceDhcpBackend {
         }
 
         releaseDhcp(dhcpStructList.iterator(), spec, completion);
+    }
+
+    @Override
+    public void vmDefaultL3NetworkChanged(VmInstanceInventory vm, String previousL3, String nowL3, Completion completion) {
+        throw new CloudRuntimeException("not supported yet");
     }
 }

@@ -13,9 +13,12 @@ import java.util.Map;
 
 public class KVMSimulatorConfig {
     public volatile boolean connectSuccess = true;
+    public List<ConnectCmd> connectCmds = new ArrayList<ConnectCmd>();
     public volatile String simulatorHostUuid;
+    public Map<String, String> connectHostUuids = new HashMap<String, String>();
     public volatile boolean connectException = false;
     public volatile boolean pingSuccess = true;
+    public volatile Map<String, Boolean> pingSuccessMap = new HashMap<String, Boolean>();
     public volatile boolean mountSuccess = true;
     public volatile boolean mountException = false;
     public volatile long totalDiskCapacity = SizeUnit.TERABYTE.toByte(100);
@@ -37,13 +40,13 @@ public class KVMSimulatorConfig {
     public volatile boolean stopVmSuccess = true;
     public volatile List<StopVmCmd> stopVmCmds = new ArrayList<StopVmCmd>();
     public volatile boolean rebootVmSuccess = true;
+    public volatile List<RebootVmCmd> rebootVmCmds = new ArrayList<RebootVmCmd>();
     public volatile boolean destroyVmSuccess = true;
     public volatile boolean attachVolumeSuccess = true;
     public volatile boolean detachVolumeSuccess = true;
     public volatile List<DetachDataVolumeCmd> detachDataVolumeCmds = new ArrayList<DetachDataVolumeCmd>();
     public volatile String destroyedVmUuid;
     public volatile boolean securityGroupSuccess = true;
-    public volatile boolean createTemplateFromRootVolumeSuccess = true;
     public volatile Map<String, SecurityGroupRuleTO> securityGroups = new HashMap<String, SecurityGroupRuleTO>();
     public volatile List<RefreshAllRulesOnHostCmd> securityGroupRefreshAllRulesOnHostCmds = new ArrayList<RefreshAllRulesOnHostCmd>();
     public volatile Map<String, KvmVmState> vms = new HashMap<String, KvmVmState>();
@@ -67,4 +70,11 @@ public class KVMSimulatorConfig {
     public volatile List<LoginIscsiTargetCmd> loginIscsiTargetCmds = new ArrayList<LoginIscsiTargetCmd>();
     public volatile List<AttachNicCommand> attachNicCommands = new ArrayList<AttachNicCommand>();
     public volatile List<DetachNicCommand> detachNicCommands = new ArrayList<DetachNicCommand>();
+    public volatile boolean detachNicSuccess = true;
+    public volatile List<AttachIsoCmd> attachIsoCmds = new ArrayList<AttachIsoCmd>();
+    public volatile List<DetachIsoCmd> detachIsoCmds = new ArrayList<DetachIsoCmd>();
+    public volatile double startVmFailureChance = 0;
+    public volatile List<CheckVmStateCmd> checkVmStateCmds = new ArrayList<CheckVmStateCmd>();
+    public volatile Map<String, Map<String, String>> checkVmStatesConfig = new HashMap<String, Map<String, String>>();
+    public volatile boolean vmSyncSuccess = true;
 }

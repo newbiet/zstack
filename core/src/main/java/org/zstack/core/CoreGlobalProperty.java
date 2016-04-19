@@ -26,4 +26,12 @@ public class CoreGlobalProperty {
     public static boolean EXPOSE_SIMULATOR_TYPE;
     @GlobalProperty(name="exitJVMOnStop", defaultValue = "true")
     public static boolean EXIT_JVM_ON_STOP;
+    @GlobalProperty(name="locale", defaultValue = "zh_cn")
+    public static String LOCALE;
+    @GlobalProperty(name="user.home")
+    public static String USER_HOME;
+    @GlobalProperty(name="RESTFacade.readTimeout", defaultValue = "300000")
+    public static int REST_FACADE_READ_TIMEOUT;
+    @GlobalProperty(name="RESTFacade.connectTimeout", defaultValue = "300000")
+    public static int REST_FACADE_CONNECT_TIMEOUT;
 }

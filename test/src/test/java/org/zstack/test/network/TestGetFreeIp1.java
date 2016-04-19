@@ -63,7 +63,7 @@ public class TestGetFreeIp1 {
         AllocateIpMsg amsg = new AllocateIpMsg();
         amsg.setL3NetworkUuid(l3inv.getUuid());
         bus.makeTargetServiceIdByResourceUuid(amsg, L3NetworkConstant.SERVICE_ID, amsg.getL3NetworkUuid());
-        bus.call(amsg);
+        AllocateIpReply r = (AllocateIpReply) bus.call(amsg);
 
         ips = api.getFreeIp(l3inv.getUuid(), null);
         Assert.assertEquals(21, ips.size());

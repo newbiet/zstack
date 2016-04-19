@@ -12,12 +12,12 @@ import org.zstack.core.db.DatabaseFacade;
 import org.zstack.core.errorcode.ErrorFacade;
 import org.zstack.header.core.workflow.Flow;
 import org.zstack.header.core.workflow.FlowException;
+import org.zstack.header.core.workflow.FlowRollback;
 import org.zstack.header.core.workflow.FlowTrigger;
 import org.zstack.header.errorcode.ErrorCode;
 import org.zstack.header.message.MessageReply;
 import org.zstack.header.network.l3.*;
 import org.zstack.header.vm.*;
-import org.zstack.header.vm.VmInstanceConstant.VmOperation;
 import org.zstack.identity.AccountManager;
 import org.zstack.utils.Utils;
 import org.zstack.utils.logging.CLogger;
@@ -123,6 +123,7 @@ public class VmAllocateNicFlow implements Flow {
                         nic.setUsedIpUuid(areply.getIpInventory().getUuid());
                         nic.setVmInstanceUuid(spec.getVmInventory().getUuid());
                         nic.setL3NetworkUuid(areply.getIpInventory().getL3NetworkUuid());
+                        assert nic.getL3NetworkUuid() != null;
                         nic.setMac(NetworkUtils.generateMacWithDeviceId((short) deviceId));
                         nic.setDeviceId(deviceId);
                         nic.setNetmask(areply.getIpInventory().getNetmask());
@@ -151,7 +152,7 @@ public class VmAllocateNicFlow implements Flow {
     }
 
     @Override
-    public void rollback(final FlowTrigger chain, Map data) {
+    public void rollback(final FlowRollback chain, Map data) {
         VmInstanceSpec spec = (VmInstanceSpec) data.get(VmInstanceConstant.Params.VmInstanceSpec.toString());
         final List<VmNicInventory> destNics = spec.getDestNics();
         if (destNics.isEmpty()) {

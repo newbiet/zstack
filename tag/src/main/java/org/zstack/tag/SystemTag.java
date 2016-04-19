@@ -49,12 +49,14 @@ public class SystemTag {
         DELETE
     }
 
-    public void installLifeCycleListener(SystemTagLifeCycleListener listener) {
+    public SystemTag installLifeCycleListener(SystemTagLifeCycleListener listener) {
         lifeCycleListeners.add(listener);
+        return this;
     }
 
-    public void installJudger(SystemTagOperationJudger judger) {
+    public SystemTag installJudger(SystemTagOperationJudger judger) {
         judgers.add(judger);
+        return this;
     }
 
     void callCreatedJudger(SystemTagInventory tag) {
@@ -111,6 +113,23 @@ public class SystemTag {
         q.add(SystemTagVO_.resourceUuid, Op.EQ, resourceUuid);
         q.add(SystemTagVO_.tag, useOp(), useTagFormat());
         return q.isExists();
+    }
+
+    public void copy(String srcUuid, Class srcClass, String dstUuid, Class dstClass) {
+        SimpleQuery<SystemTagVO> q = dbf.createQuery(SystemTagVO.class);
+        q.add(SystemTagVO_.resourceType, Op.EQ, srcClass.getSimpleName());
+        q.add(SystemTagVO_.resourceUuid, Op.EQ, srcUuid);
+        q.add(SystemTagVO_.tag, useOp(), useTagFormat());
+        List<SystemTagVO> tags = q.list();
+        for (SystemTagVO tag : tags) {
+            if (tag.isInherent()) {
+                deleteInherentTag(dstUuid, dstClass);
+                tagMgr.createInherentSystemTag(dstUuid, tag.getTag(), dstClass.getSimpleName());
+            } else {
+                delete(dstUuid, dstClass);
+                tagMgr.createNonInherentSystemTag(dstUuid, tag.getTag(), dstClass.getSimpleName());
+            }
+        }
     }
 
     public List<String> getTags(String resourceUuid, Class resourceClass) {
@@ -171,6 +190,9 @@ public class SystemTag {
         return resourceClass;
     }
 
+    public void delete(String resourceUuid, Class resourceClass) {
+        tagMgr.deleteSystemTag(tagFormat, resourceUuid, resourceClass.getSimpleName(), false);
+    }
 
     public void delete(String resourceUuid) {
         tagMgr.deleteSystemTag(tagFormat, resourceUuid, resourceClass.getSimpleName(), false);
@@ -180,9 +202,17 @@ public class SystemTag {
         tagMgr.deleteSystemTag(tagFormat, resourceUuid, resourceClass.getSimpleName(), true);
     }
 
+    public void deleteInherentTag(String resourceUuid, Class resourceClass) {
+        tagMgr.deleteSystemTag(tagFormat, resourceUuid, resourceClass.getSimpleName(), true);
+    }
+
     private SystemTagInventory createTag(String resourceUuid, Class resourceClass, boolean inherent, boolean recreate) {
         if (recreate) {
-            tagMgr.deleteSystemTag(tagFormat, resourceUuid, resourceClass.getSimpleName(), inherent);
+            if (inherent) {
+                deleteInherentTag(resourceUuid, resourceClass);
+            } else {
+                delete(resourceUuid, resourceClass);
+            }
         }
 
         if (inherent) {
@@ -224,8 +254,9 @@ public class SystemTag {
         return createTag(resourceUuid, resourceClass, true, true);
     }
 
-    public void installValidator(SystemTagValidator validator) {
+    public SystemTag installValidator(SystemTagValidator validator) {
         validators.add(validator);
+        return this;
     }
 
     public boolean isMatch(String tag) {
@@ -236,6 +267,24 @@ public class SystemTag {
         for (SystemTagValidator validator : validators) {
             validator.validateSystemTag(resourceUuid, resourceType, tag);
         }
+    }
+
+    public SystemTagInventory updateByTagUuid(String tagUuid, String newTag) {
+        return tagMgr.updateSystemTag(tagUuid, newTag);
+    }
+
+    public SystemTagInventory update(String resourceUuid, String newTag) {
+        SimpleQuery<SystemTagVO> q = dbf.createQuery(SystemTagVO.class);
+        q.select(SystemTagVO_.uuid);
+        q.add(SystemTagVO_.resourceType, Op.EQ, resourceClass.getSimpleName());
+        q.add(SystemTagVO_.resourceUuid, Op.EQ, resourceUuid);
+        q.add(SystemTagVO_.tag, useOp(), useTagFormat());
+        String tagUuid = q.findValue();
+        if (tagUuid == null) {
+            return null;
+        }
+
+        return tagMgr.updateSystemTag(tagUuid, newTag);
     }
 
     void setTagMgr(TagManager tagMgr) {

@@ -4,8 +4,7 @@ import org.zstack.header.message.NeedJsonSchema;
 
 /**
  */
-public interface VmTracerCanonicalEvents {
-    public static final String HOST_CHANGED_PATH = "/vmTracer/hostChanged";
+public class VmTracerCanonicalEvents {
     public static final String VM_STATE_CHANGED_PATH = "/vmTracer/vmStateChanged";
     public static final String STRANGER_VM_FOUND_PATH = "/vmTracer/strangerVmFound";
 
@@ -46,10 +45,28 @@ public interface VmTracerCanonicalEvents {
     }
 
     @NeedJsonSchema
-    public static class VmStateChangedData {
+    public static class VmStateChangedOnHostData {
         private String vmUuid;
         private String from;
         private String to;
+        private String originalHostUuid;
+        private String currentHostUuid;
+
+        public String getOriginalHostUuid() {
+            return originalHostUuid;
+        }
+
+        public void setOriginalHostUuid(String originalHostUuid) {
+            this.originalHostUuid = originalHostUuid;
+        }
+
+        public String getCurrentHostUuid() {
+            return currentHostUuid;
+        }
+
+        public void setCurrentHostUuid(String currentHostUuid) {
+            this.currentHostUuid = currentHostUuid;
+        }
 
         public String getVmUuid() {
             return vmUuid;
@@ -83,37 +100,6 @@ public interface VmTracerCanonicalEvents {
             if (to != null) {
                 this.to = to.toString();
             }
-        }
-    }
-
-    @NeedJsonSchema
-    public static class HostChangedData {
-        private String vmUuid;
-        private String from;
-        private String to;
-
-        public String getVmUuid() {
-            return vmUuid;
-        }
-
-        public void setVmUuid(String vmUuid) {
-            this.vmUuid = vmUuid;
-        }
-
-        public String getFrom() {
-            return from;
-        }
-
-        public void setFrom(String from) {
-            this.from = from;
-        }
-
-        public String getTo() {
-            return to;
-        }
-
-        public void setTo(String to) {
-            this.to = to;
         }
     }
 }

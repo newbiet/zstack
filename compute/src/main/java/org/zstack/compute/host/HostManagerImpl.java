@@ -10,7 +10,7 @@ import org.zstack.core.db.DbEntityLister;
 import org.zstack.core.db.SimpleQuery;
 import org.zstack.core.db.SimpleQuery.Op;
 import org.zstack.core.errorcode.ErrorFacade;
-import org.zstack.core.safeguard.Guard;
+import org.zstack.core.defer.Deferred;
 import org.zstack.core.thread.AsyncThread;
 import org.zstack.core.thread.SyncThread;
 import org.zstack.core.workflow.*;
@@ -23,6 +23,7 @@ import org.zstack.header.errorcode.ErrorCode;
 import org.zstack.header.exception.CloudRuntimeException;
 import org.zstack.header.host.*;
 import org.zstack.header.managementnode.ManagementNodeChangeListener;
+import org.zstack.header.managementnode.ManagementNodeReadyExtensionPoint;
 import org.zstack.header.message.APIMessage;
 import org.zstack.header.message.Message;
 import org.zstack.header.message.MessageReply;
@@ -30,15 +31,14 @@ import org.zstack.header.message.NeedReplyMessage;
 import org.zstack.search.GetQuery;
 import org.zstack.search.SearchQuery;
 import org.zstack.tag.TagManager;
-import org.zstack.utils.Bucket;
-import org.zstack.utils.ObjectUtils;
-import org.zstack.utils.Utils;
+import org.zstack.utils.*;
+import org.zstack.utils.function.ForEachFunction;
 import org.zstack.utils.logging.CLogger;
 
 import javax.persistence.Tuple;
 import java.util.*;
 
-public class HostManagerImpl extends AbstractService implements HostManager, ManagementNodeChangeListener {
+public class HostManagerImpl extends AbstractService implements HostManager, ManagementNodeChangeListener, ManagementNodeReadyExtensionPoint {
     private static final CLogger logger = Utils.getLogger(HostManagerImpl.class);
 
     @Autowired
@@ -155,8 +155,8 @@ public class HostManagerImpl extends AbstractService implements HostManager, Man
         }
     }
 
-    @Guard
-    private void handle(APIAddHostMsg msg) {
+    @Deferred
+    private void handle(final APIAddHostMsg msg) {
         final APIAddHostEvent evt = new APIAddHostEvent(msg.getId());
 
         final ClusterVO cluster = findClusterByUuid(msg.getClusterUuid());
@@ -298,7 +298,18 @@ public class HostManagerImpl extends AbstractService implements HostManager, Man
             public void handle(ErrorCode errCode, Map data) {
                 evt.setErrorCode(errf.instantiateErrorCode(HostErrors.UNABLE_TO_ADD_HOST, errCode));
                 bus.publish(evt);
+
+                // delete host totally through the database, so other tables
+                // refer to the host table will clean up themselves
                 dbf.remove(vo);
+                dbf.eoCleanup(HostVO.class);
+
+                CollectionUtils.safeForEach(pluginRgty.getExtensionList(FailToAddHostExtensionPoint.class), new ForEachFunction<FailToAddHostExtensionPoint>() {
+                    @Override
+                    public void run(FailToAddHostExtensionPoint ext) {
+                        ext.failedToAddHost(inv, msg);
+                    }
+                });
             }
         }).start();
     }
@@ -441,10 +452,7 @@ public class HostManagerImpl extends AbstractService implements HostManager, Man
     }
 
     @Override
-    @AsyncThread
     public void iJoin(String nodeId) {
-        logger.debug(String.format("Management node[uuid:%s] joins, start loading host...", nodeId));
-        loadHost();
     }
 
 
@@ -460,5 +468,12 @@ public class HostManagerImpl extends AbstractService implements HostManager, Man
     @Override
     public HostMessageHandlerExtensionPoint getHostMessageHandlerExtension(Message msg) {
         return msgHandlers.get(msg.getMessageName());
+    }
+
+    @Override
+    @AsyncThread
+    public void managementNodeReady() {
+        logger.debug(String.format("Management node[uuid:%s] joins, start loading host...", Platform.getManagementServerId()));
+        loadHost();
     }
 }

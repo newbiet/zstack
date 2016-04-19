@@ -10,9 +10,9 @@ import org.zstack.core.GlobalPropertyDefinition;
 public class IscsiFileSystemBackendPrimaryStorageGlobalProperty {
     @GlobalProperty(name = "IscsiFileSystemBackendPrimaryStorage.agentPort", defaultValue = "7760")
     public static int AGENT_PORT;
-    @GlobalProperty(name = "IscsiFileSystemBackendPrimaryStorage.agentPackageName", defaultValue = "iscsifilesystemagent-0.9.tar.gz")
+    @GlobalProperty(name = "IscsiFileSystemBackendPrimaryStorage.agentPackageName", defaultValue = "iscsifilesystemagent-1.1.tar.gz")
     public static String AGENT_PACKAGE_NAME;
-    @GlobalProperty(name = "IscsiFileSystemBackendPrimaryStorage.ansiblePlaybook", defaultValue = "iscsi.yaml")
+    @GlobalProperty(name = "IscsiFileSystemBackendPrimaryStorage.ansiblePlaybook", defaultValue = "iscsi.py")
     public static String ANSIBLE_PLAYBOOK_NAME;
     @GlobalProperty(name = "IscsiFileSystemBackendPrimaryStorage.ansibleModulePath", defaultValue = "ansible/iscsi")
     public static String ANSIBLE_MODULE_PATH;

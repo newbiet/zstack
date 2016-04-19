@@ -20,9 +20,13 @@ public interface FlowChain {
 
     FlowChain error(FlowErrorHandler handler);
 
+    FlowChain Finally(FlowFinallyHandler handler);
+
     FlowChain setData(Map data);
 
     FlowChain setName(String name);
+
+    void setProcessors(List<FlowChainProcessor> processors);
 
     Map getData();
 

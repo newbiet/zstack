@@ -1,12 +1,15 @@
 package org.zstack.core.cloudbus;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.zstack.core.Platform;
 import org.zstack.core.thread.AsyncThread;
 import org.zstack.header.Component;
 import org.zstack.header.exception.CloudRuntimeException;
 import org.zstack.header.message.Event;
 import org.zstack.header.message.NeedJsonSchema;
 import org.zstack.utils.TypeUtils;
+import org.zstack.utils.Utils;
+import org.zstack.utils.logging.CLogger;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -58,6 +61,7 @@ public class EventFacadeImpl implements EventFacade, CloudBusEventListener, Comp
                 r.run();
             } else {
                 Map<String, String> tokens = tokenize(e.getPath(), path);
+                tokens.put(EventFacade.META_DATA_MANAGEMENT_NODE_ID, e.getManagementNodeId());
                 Object data = null;
                 if (e.getContent() != null) {
                     data = e.getContent();
@@ -157,6 +161,7 @@ public class EventFacadeImpl implements EventFacade, CloudBusEventListener, Comp
         assert path != null;
         CanonicalEvent evt = new CanonicalEvent();
         evt.setPath(path);
+        evt.setManagementNodeId(Platform.getManagementServerId());
         if (data != null) {
             if (!TypeUtils.isPrimitiveOrWrapper(data.getClass()) && !data.getClass().isAnnotationPresent(NeedJsonSchema.class)) {
                 throw new CloudRuntimeException(String.format("data[%s] passed to canonical event is not annotated by @NeedJsonSchema", data.getClass().getName()));

@@ -108,7 +108,7 @@ public class DnsExtension extends AbstractNetworkServiceExtension implements Com
 
     private Map<NetworkServiceDnsBackend, List<DnsStruct>> workoutDns(VmInstanceSpec spec) {
         Map<NetworkServiceDnsBackend, List<DnsStruct>> map = new HashMap<NetworkServiceDnsBackend, List<DnsStruct>>();
-        Map<NetworkServiceProviderType, List<L3NetworkInventory>> providerMap = getNetworkServiceProviderMap(NetworkServiceType.DNS, spec);
+        Map<NetworkServiceProviderType, List<L3NetworkInventory>> providerMap = getNetworkServiceProviderMap(NetworkServiceType.DNS, spec.getL3Networks());
 
         for (Map.Entry<NetworkServiceProviderType, List<L3NetworkInventory>> e : providerMap.entrySet()) {
             NetworkServiceProviderType ptype = e.getKey();
@@ -158,7 +158,14 @@ public class DnsExtension extends AbstractNetworkServiceExtension implements Com
     private void handle(final RemoveDnsMsg msg) {
         final RemoveDnsReply reply = new RemoveDnsReply();
         L3NetworkInventory l3 = L3NetworkInventory.valueOf(dbf.findByUuid(msg.getL3NetworkUuid(), L3NetworkVO.class));
-        NetworkServiceDnsBackend bkd = dnsBackends.get(getNetworkServiceProviderType(NetworkServiceType.DNS, l3));
+        NetworkServiceProviderType ptype = getNetworkServiceProviderType(NetworkServiceType.DNS, l3);
+        if (ptype == null) {
+            // backends don't need to be informed
+            bus.reply(msg, reply);
+            return;
+        }
+
+        NetworkServiceDnsBackend bkd = dnsBackends.get(ptype);
         bkd.removeDns(l3, list(msg.getDns()), new Completion(msg) {
             @Override
             public void success() {
@@ -176,7 +183,14 @@ public class DnsExtension extends AbstractNetworkServiceExtension implements Com
     private void handle(final AddDnsMsg msg) {
         final AddDnsReply reply = new AddDnsReply();
         L3NetworkInventory l3 = L3NetworkInventory.valueOf(dbf.findByUuid(msg.getL3NetworkUuid(), L3NetworkVO.class));
-        NetworkServiceDnsBackend bkd = dnsBackends.get(getNetworkServiceProviderType(NetworkServiceType.DNS, l3));
+        NetworkServiceProviderType ptype = getNetworkServiceProviderType(NetworkServiceType.DNS, l3);
+        if (ptype == null) {
+            // backends don't need to be informed
+            bus.reply(msg, reply);
+            return;
+        }
+
+        NetworkServiceDnsBackend bkd = dnsBackends.get(ptype);
         bkd.addDns(l3, list(msg.getDns()), new Completion(msg) {
             @Override
             public void success() {

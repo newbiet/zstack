@@ -5,6 +5,7 @@
 	<TestCase class="org.zstack.test.compute.vm.TestVmCreateOnHypervisorFlow"/>
 	<TestCase class="org.zstack.test.compute.vm.TestCreateVm"/>
 	<TestCase class="org.zstack.test.compute.vm.TestDestroyVm"/>
+	<TestCase class="org.zstack.test.compute.vm.TestDestroyVm1"/>
 	<TestCase class="org.zstack.test.compute.vm.TestRebootVm"/>
 	<TestCase class="org.zstack.test.compute.vm.TestRebootVmFailure"/>
 	<TestCase class="org.zstack.test.compute.vm.TestStopVm"/>
@@ -31,11 +32,13 @@
 	<TestCase class="org.zstack.test.compute.vm.TestStartVmWithAttachedVolume"/>
 	<TestCase class="org.zstack.test.compute.vm.TestAttachedVolumeToStoppedVm"/>
 	<TestCase class="org.zstack.test.compute.vm.TestVmStateTracer"/>
+	<TestCase class="org.zstack.test.compute.vm.TestVmStateTracer1"/>
 	<TestCase class="org.zstack.test.compute.vm.TestVmStateTracer2"/>
 	<TestCase class="org.zstack.test.compute.vm.TestVmStateTracer3"/>
 	<TestCase class="org.zstack.test.compute.vm.TestVmStateTracer4"/>
 	<TestCase class="org.zstack.test.compute.vm.TestVmStateTracer5"/>
     <TestCase class="org.zstack.test.compute.vm.TestVmStateTracer6"/>
+	<TestCase class="org.zstack.test.compute.vm.TestVmStateTracer7"/>
 	<TestCase class="org.zstack.test.compute.vm.TestQueryVm"/>
 	<TestCase class="org.zstack.test.compute.vm.TestQueryVm2"/>
     <TestCase class="org.zstack.test.compute.vm.TestQueryVm3"/>
@@ -46,6 +49,7 @@
 	<TestCase class="org.zstack.test.compute.vm.TestVmStaticIp1"/>
 	<TestCase class="org.zstack.test.compute.vm.TestVmStaticIp2"/>
 	<TestCase class="org.zstack.test.compute.vm.TestVmStaticIp3"/>
+	<TestCase class="org.zstack.test.compute.vm.TestVmStaticIp4"/>
     <TestCase class="org.zstack.test.compute.vm.TestCreateVmWithMultipleSameDataVolume"/>
 	<TestCase class="org.zstack.test.compute.vm.TestUpdateVm"/>
 	<TestCase class="org.zstack.test.compute.vm.TestPolicyForVm"/>
@@ -54,7 +58,11 @@
 	<TestCase class="org.zstack.test.compute.vm.TestPolicyForVm3"/>
 	<TestCase class="org.zstack.test.compute.vm.TestPolicyForVm4"/>
 	<TestCase class="org.zstack.test.compute.vm.TestPolicyForVm5"/>
+	<TestCase class="org.zstack.test.compute.vm.TestPolicyForVm6"/>
 	<TestCase class="org.zstack.test.compute.vm.TestQueryVm6"/>
 	<TestCase class="org.zstack.test.compute.vm.TestChangeVmInstanceOffering"/>
+	<TestCase class="org.zstack.test.compute.vm.TestChangeVmInstanceOffering1"/>
 	<TestCase class="org.zstack.test.compute.vm.TestVmGetAttachableL3Networks"/>
+	<TestCase class="org.zstack.test.compute.vm.TestQuotaUsageForVm"/>
+	<TestCase class="org.zstack.test.compute.vm.TestVmHostname"/>
 </UnitTestSuiteConfig>

@@ -4,33 +4,35 @@ import com.rabbitmq.client.AlreadyClosedException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.zstack.core.CoreGlobalProperty;
 import org.zstack.core.Platform;
-import org.zstack.core.cloudbus.*;
+import org.zstack.core.cloudbus.CloudBusIN;
+import org.zstack.core.cloudbus.MessageSafe;
 import org.zstack.core.componentloader.ComponentLoader;
 import org.zstack.core.componentloader.PluginRegistry;
 import org.zstack.core.db.DatabaseFacade;
 import org.zstack.core.db.GLock;
 import org.zstack.core.thread.AsyncThread;
 import org.zstack.core.thread.ThreadFacade;
-import org.zstack.core.workflow.*;
+import org.zstack.core.workflow.FlowChainBuilder;
 import org.zstack.header.AbstractService;
 import org.zstack.header.Component;
 import org.zstack.header.Service;
 import org.zstack.header.core.workflow.*;
 import org.zstack.header.errorcode.ErrorCode;
-import org.zstack.header.managementnode.IsManagementNodeReadyMsg;
-import org.zstack.header.managementnode.IsManagementNodeReadyReply;
 import org.zstack.header.exception.CloudRuntimeException;
 import org.zstack.header.managementnode.*;
 import org.zstack.header.managementnode.ManagementNodeExitMsg.Reason;
 import org.zstack.header.message.APIMessage;
 import org.zstack.header.message.Message;
 import org.zstack.portal.apimediator.ApiMediator;
+import org.zstack.utils.BootErrorLog;
 import org.zstack.utils.CollectionUtils;
 import org.zstack.utils.Utils;
 import org.zstack.utils.function.ForEachFunction;
 import org.zstack.utils.logging.CLogger;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.zstack.utils.ExceptionDSL.throwableSafe;
@@ -220,8 +222,9 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
 
                 @Override
                 public void start() {
+                    logger.info("starting component: " + c.getClass().getName());
                     c.start();
-                    logger.info("Started component: " + c.getClass().getName());
+                    logger.info(String.format("component[%s] starts successfully", c.getClass()));
                     isStart = true;
                 }
 
@@ -298,7 +301,7 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
                 }
 
                 @Override
-                public void rollback(FlowTrigger trigger, Map data) {
+                public void rollback(FlowRollback trigger, Map data) {
                     bus.stop();
                     trigger.rollback();
                 }
@@ -318,7 +321,7 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
                 }
 
                 @Override
-                public void rollback(FlowTrigger trigger, Map data) {
+                public void rollback(FlowRollback trigger, Map data) {
                     bus.unregisterService(self);
                     trigger.rollback();
                 }
@@ -331,7 +334,7 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
                 }
 
                 @Override
-                public void rollback(FlowTrigger trigger, Map data) {
+                public void rollback(FlowRollback trigger, Map data) {
                     stopComponents();
                     trigger.rollback();
                 }
@@ -344,7 +347,7 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
                 }
 
                 @Override
-                public void rollback(FlowTrigger trigger, Map data) {
+                public void rollback(FlowRollback trigger, Map data) {
                     removeInventory(false);
                     trigger.rollback();
                 }
@@ -366,7 +369,7 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
                 }
 
                 @Override
-                public void rollback(FlowTrigger trigger, Map data) {
+                public void rollback(FlowRollback trigger, Map data) {
                     node.leave();
                     trigger.rollback();
                 }
@@ -379,7 +382,7 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
                 }
 
                 @Override
-                public void rollback(FlowTrigger trigger, Map data) {
+                public void rollback(FlowRollback trigger, Map data) {
                     apim.stop();
                     trigger.rollback();
                 }
@@ -391,6 +394,7 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
             }).error(new FlowErrorHandler() {
                 @Override
                 public void handle(ErrorCode errCode, Map data) {
+                    new BootErrorLog().write(errCode.toString());
                     ret.success = false;
                 }
             }).start();
@@ -411,9 +415,14 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
         }
 
         stopped = false;
-		logger.info("Management node: " + getId() + " starts successfully");
 
 		installShutdownHook();
+
+        for (ManagementNodeReadyExtensionPoint ext : pluginRgty.getExtensionList(ManagementNodeReadyExtensionPoint.class)) {
+            ext.managementNodeReady();
+        }
+
+        logger.info("Management node: " + getId() + " starts successfully");
 
 		synchronized (this) {
 		    isNodeRunning = NODE_RUNNING;
@@ -426,19 +435,21 @@ public class ManagementNodeManagerImpl extends AbstractService implements Manage
 			}
 		}
 
-        logger.debug("quited mainloop, start stopping management node");
+        logger.debug("quited main-loop, start stopping management node");
         stop();
 		return true;
 	}
 
 	@Override
 	public boolean stop() {
+        Platform.IS_RUNNING = false;
+
 	    if (stopped) {
 	        /* avoid repeated call from JVM shutdown hook, if process is exited from a former stop() call
 	         */
 	        return true;
 	    }
-	    
+
 	    stopped = true;
         final Service self = this;
         throwableSafeSuppress(new Runnable() {

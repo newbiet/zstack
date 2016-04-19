@@ -14,6 +14,8 @@ public interface VmInstanceConstant {
         AttachingVolumeInventory,
         DestPrimaryStorageInventoryForAttachingVolume,
         AttachNicInventory,
+        AbnormalLifeCycleStruct,
+        DeletionPolicy,
     }
     
     public static enum VmOperation {
@@ -26,11 +28,12 @@ public interface VmInstanceConstant {
         AttachVolume,
         AttachNic,
         DetachNic,
+        AttachIso,
+        DetachIso,
+        Expunge
     }
 
     String QUOTA_VM_NUM = "vm.num";
     String QUOTA_VM_MEMORY = "vm.memorySize";
     String QUOTA_CPU_NUM = "vm.cpuNum";
-
-    String NIC_META_RELEASE_IP_AND_ACQUIRE_NEW = "RELEASE_OLD_IP_AND_ACQUIRE_NEW";
 }

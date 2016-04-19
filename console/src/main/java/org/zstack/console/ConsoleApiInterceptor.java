@@ -8,11 +8,9 @@ import org.zstack.core.db.SimpleQuery.Op;
 import org.zstack.core.errorcode.ErrorFacade;
 import org.zstack.header.apimediator.ApiMessageInterceptionException;
 import org.zstack.header.apimediator.ApiMessageInterceptor;
-import org.zstack.header.apimediator.StopRoutingException;
 import org.zstack.header.console.APIRequestConsoleAccessMsg;
 import org.zstack.header.console.ConsoleConstants;
 import org.zstack.header.message.APIMessage;
-import org.zstack.header.vm.VmInstance;
 import org.zstack.header.vm.VmInstanceState;
 import org.zstack.header.vm.VmInstanceVO;
 import org.zstack.header.vm.VmInstanceVO_;
@@ -50,6 +48,6 @@ public class ConsoleApiInterceptor implements ApiMessageInterceptor {
                     String.format("Console is only available when the VM[uuid:%s] is Running, but the current state is %s", msg.getVmInstanceUuid(), state)
             ));
         }
-        bus.makeTargetServiceIdByResourceUuid(msg, ConsoleConstants.SERVICE_ID, ((APIRequestConsoleAccessMsg) msg).getVmInstanceUuid());
+        bus.makeTargetServiceIdByResourceUuid(msg, ConsoleConstants.SERVICE_ID, msg.getVmInstanceUuid());
     }
 }

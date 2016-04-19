@@ -28,17 +28,15 @@ public class VmReturnHostFlow extends NoRollbackFlow {
         VmInstanceSpec spec = (VmInstanceSpec) data.get(VmInstanceConstant.Params.VmInstanceSpec.toString());
 
         if (spec.getVmInventory().getHostUuid() == null) {
-            // the vm failed because no host available at that time
+            // the vm failed because no host available at that time or the vm is stopped
             // no need to return host
             chain.next();
             return;
         }
 
-        HostVO hvo = dbf.findByUuid(spec.getVmInventory().getHostUuid(), HostVO.class);
-        HostInventory hinv = HostInventory.valueOf(hvo);
 
         ReturnHostCapacityMsg msg = new ReturnHostCapacityMsg();
-        msg.setHost(hinv);
+        msg.setHostUuid(spec.getVmInventory().getHostUuid());
         msg.setCpuCapacity(spec.getVmInventory().getCpuNum()*spec.getVmInventory().getCpuSpeed());
         msg.setMemoryCapacity(spec.getVmInventory().getMemorySize());
         msg.setServiceId(bus.makeLocalServiceId(HostAllocatorConstant.SERVICE_ID));

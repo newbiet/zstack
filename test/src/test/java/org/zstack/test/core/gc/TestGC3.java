@@ -61,7 +61,7 @@ public class TestGC3 {
 
     @Test
     public void test() {
-        GCContext<Data> context = new GCContext<Data>();
+        TimeBasedGCPersistentContext<Data> context = new TimeBasedGCPersistentContext<Data>();
         context.setRunnerClass(TRunner.class);
         context.setInterval(1);
         context.setTimeUnit(TimeUnit.SECONDS);

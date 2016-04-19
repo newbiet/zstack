@@ -8,14 +8,13 @@ import org.zstack.core.db.DatabaseFacade;
 import org.zstack.core.db.SimpleQuery;
 import org.zstack.core.db.SimpleQuery.Op;
 import org.zstack.core.errorcode.ErrorFacade;
+import org.zstack.core.timeout.ApiTimeoutManager;
 import org.zstack.core.workflow.*;
 import org.zstack.header.core.Completion;
 import org.zstack.header.core.ReturnValueCompletion;
 import org.zstack.header.core.workflow.*;
 import org.zstack.header.errorcode.ErrorCode;
 import org.zstack.header.errorcode.OperationFailureException;
-import org.zstack.header.identity.AccountResourceRefVO;
-import org.zstack.header.identity.AccountResourceRefVO_;
 import org.zstack.header.message.MessageReply;
 import org.zstack.header.network.l3.L3NetworkInventory;
 import org.zstack.header.network.l3.L3NetworkVO;
@@ -51,6 +50,8 @@ public class VirtualRouterEipBackend implements EipBackend {
     protected ErrorFacade errf;
     @Autowired
     private ApplianceVmFacade asf;
+    @Autowired
+    private ApiTimeoutManager apiTimeoutManager;
 
     private List<ApplianceVmFirewallRuleInventory> getFirewallRules(EipStruct struct) {
         ApplianceVmFirewallRuleInventory tcp = new ApplianceVmFirewallRuleInventory();
@@ -88,7 +89,7 @@ public class VirtualRouterEipBackend implements EipBackend {
             }
 
             @Override
-            public void rollback(final FlowTrigger trigger, Map data) {
+            public void rollback(final FlowRollback trigger, Map data) {
                 asf.removeFirewall(vr.getUuid(), struct.getVip().getL3NetworkUuid(), getFirewallRules(struct), new Completion(trigger) {
                     @Override
                     public void success() {
@@ -127,6 +128,7 @@ public class VirtualRouterEipBackend implements EipBackend {
                 msg.setCheckStatus(true);
                 msg.setPath(VirtualRouterConstant.VR_CREATE_EIP);
                 msg.setCommand(cmd);
+                msg.setCommandTimeout(apiTimeoutManager.getTimeout(cmd.getClass(), "5m"));
                 msg.setVmInstanceUuid(vr.getUuid());
                 bus.makeTargetServiceIdByResourceUuid(msg, VmInstanceConstant.SERVICE_ID, vr.getUuid());
                 bus.send(msg, new CloudBusCallBack(completion) {
@@ -265,6 +267,7 @@ public class VirtualRouterEipBackend implements EipBackend {
                 VirtualRouterAsyncHttpCallMsg msg = new VirtualRouterAsyncHttpCallMsg();
                 msg.setVmInstanceUuid(vr.getUuid());
                 msg.setCommand(cmd);
+                msg.setCommandTimeout(apiTimeoutManager.getTimeout(cmd.getClass(), "5m"));
                 msg.setCheckStatus(true);
                 msg.setPath(VirtualRouterConstant.VR_REMOVE_EIP);
                 bus.makeTargetServiceIdByResourceUuid(msg, VmInstanceConstant.SERVICE_ID, vr.getUuid());

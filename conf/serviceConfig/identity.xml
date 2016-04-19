@@ -129,6 +129,44 @@
     </message>
 
     <message>
+        <name>org.zstack.header.identity.APIQueryAccountResourceRefMsg</name>
+        <serviceId>query</serviceId>
+    </message>
+
+    <message>
         <name>org.zstack.header.identity.APIDeleteAccountMsg</name>
+    </message>
+
+    <message>
+        <name>org.zstack.header.identity.APIGetAccountQuotaUsageMsg</name>
+    </message>
+
+    <message>
+        <name>org.zstack.header.identity.APIQuerySharedResourceMsg</name>
+        <serviceId>query</serviceId>
+    </message>
+
+    <message>
+        <name>org.zstack.header.identity.APICheckApiPermissionMsg</name>
+    </message>
+
+    <message>
+        <name>org.zstack.header.identity.APIDetachPoliciesFromUserMsg</name>
+    </message>
+
+    <message>
+        <name>org.zstack.header.identity.APIAttachPoliciesToUserMsg</name>
+    </message>
+
+    <message>
+        <name>org.zstack.header.identity.APIUpdateUserGroupMsg</name>
+    </message>
+
+    <message>
+        <name>org.zstack.header.identity.APIGetResourceAccountMsg</name>
+    </message>
+
+    <message>
+        <name>org.zstack.header.identity.APIChangeResourceOwnerMsg</name>
     </message>
 </service>
