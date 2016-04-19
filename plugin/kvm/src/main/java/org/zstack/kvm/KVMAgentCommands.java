@@ -738,6 +738,17 @@ public class KVMAgentCommands {
 		public void setPort(int port) {
 			this.port = port;
 		}
+		
+        private string protocol;
+
+                public string getProtocol() {
+                        return protocol;
+                }
+
+                public void setProtocol(string protocol) {
+                        this.protocol = protocol;
+                }
+
     }
     
     public static class StopVmCmd extends AgentCommand {
