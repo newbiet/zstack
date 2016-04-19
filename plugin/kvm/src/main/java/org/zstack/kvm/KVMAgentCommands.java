@@ -2,14 +2,25 @@ package org.zstack.kvm;
 
 import org.zstack.core.validation.ConditionalValidation;
 import org.zstack.header.core.validation.Validation;
+import org.zstack.header.vm.VmBootDevice;
 import org.zstack.network.securitygroup.SecurityGroupRuleTO;
 
 import java.util.*;
 
 public class KVMAgentCommands {
 	public static enum BootDev {
-		hd,
-		cdrom,
+		hd(VmBootDevice.HardDisk),
+		cdrom(VmBootDevice.CdRom);
+
+        private VmBootDevice device;
+
+        private BootDev(VmBootDevice dev) {
+            device = dev;
+        }
+
+        public VmBootDevice toVmBootDevice() {
+            return device;
+        }
 	}
 	
     public static class AgentResponse implements ConditionalValidation {
@@ -35,6 +46,15 @@ public class KVMAgentCommands {
     }
     
     public static class AgentCommand {
+    }
+
+    public static class CheckVmStateCmd extends AgentCommand {
+        public List<String> vmUuids;
+        public String hostUuid;
+    }
+
+    public static class CheckVmStateRsp extends AgentResponse {
+        public Map<String, String> states;
     }
 
     public static class DetachNicCommand extends AgentCommand {
@@ -89,6 +109,16 @@ public class KVMAgentCommands {
 
     public static class ConnectCmd extends AgentCommand {
         private String hostUuid;
+        private String sendCommandUrl;
+
+        public String getSendCommandUrl() {
+            return sendCommandUrl;
+        }
+
+        public void setSendCommandUrl(String sendCommandUrl) {
+            this.sendCommandUrl = sendCommandUrl;
+        }
+
         public String getHostUuid() {
             return hostUuid;
         }
@@ -119,6 +149,7 @@ public class KVMAgentCommands {
     }
     
     public static class PingCmd extends AgentCommand {
+        public String hostUuid;
     }
     
     public static class PingResponse extends AgentResponse {
@@ -306,10 +337,19 @@ public class KVMAgentCommands {
     public static class NicTO {
     	private String mac;
     	private String bridgeName;
+        private String uuid;
     	private String nicInternalName;
     	private int deviceId;
     	private String metaData;
         private Boolean useVirtio;
+
+        public String getUuid() {
+            return uuid;
+        }
+
+        public void setUuid(String uuid) {
+            this.uuid = uuid;
+        }
 
         public Boolean getUseVirtio() {
             return useVirtio;
@@ -362,7 +402,7 @@ public class KVMAgentCommands {
         private String deviceType = FILE;
         private String volumeUuid;
         private boolean useVirtio;
-        private int cacheMode;
+        private String cacheMode = "none";
 
         public VolumeTO() {
         }
@@ -412,10 +452,12 @@ public class KVMAgentCommands {
         public void setDeviceId(int deviceId) {
             this.deviceId = deviceId;
         }
-        public int getCacheMode() {
+
+        public String getCacheMode() {
             return cacheMode;
         }
-        public void setCacheMode(int cacheMode) {
+
+        public void setCacheMode(String cacheMode) {
             this.cacheMode = cacheMode;
         }
     }
@@ -443,7 +485,19 @@ public class KVMAgentCommands {
     public static class AttachDataVolumeCmd extends AgentCommand {
         private VolumeTO volume;
         private String vmInstanceUuid;
-        
+        private Map<String, Object> addons;
+
+        public Map<String, Object> getAddons() {
+            if (addons == null) {
+                addons = new HashMap<String, Object>();
+            }
+            return addons;
+        }
+
+        public void setAddons(Map<String, Object> addons) {
+            this.addons = addons;
+        }
+
         public VolumeTO getVolume() {
             return volume;
         }
@@ -493,7 +547,7 @@ public class KVMAgentCommands {
             this.path = path;
         }
     }
-    
+
     public static class StartVmCmd extends AgentCommand {
     	private String vmInstanceUuid;
     	private long vmInternalId;
@@ -501,7 +555,9 @@ public class KVMAgentCommands {
     	private long memory;
     	private int cpuNum;
     	private long cpuSpeed;
-    	private String bootDev;
+        private int socketNum;
+        private int cpuOnSocket;
+    	private List<String> bootDev;
     	private VolumeTO rootVolume;
         private IsoTO bootIso;
     	private List<VolumeTO> dataVolumes;
@@ -510,7 +566,64 @@ public class KVMAgentCommands {
         private Map<String, Object> addons;
         private boolean useVirtio;
         private String consoleMode;
-        private boolean nestedVirtualization;
+        private String nestedVirtualization;
+        private String hostManagementIp;
+
+        public int getSocketNum() {
+            return socketNum;
+        }
+
+        public void setSocketNum(int socketNum) {
+            this.socketNum = socketNum;
+        }
+
+        public int getCpuOnSocket() {
+            return cpuOnSocket;
+        }
+
+        public void setCpuOnSocket(int cpuOnSocket) {
+            this.cpuOnSocket = cpuOnSocket;
+        }
+
+        public String getVmName() {
+            return vmName;
+        }
+
+        public void setVmName(String vmName) {
+            this.vmName = vmName;
+        }
+
+        public long getMemory() {
+            return memory;
+        }
+
+        public void setMemory(long memory) {
+            this.memory = memory;
+        }
+
+        public int getCpuNum() {
+            return cpuNum;
+        }
+
+        public void setCpuNum(int cpuNum) {
+            this.cpuNum = cpuNum;
+        }
+
+        public long getCpuSpeed() {
+            return cpuSpeed;
+        }
+
+        public void setCpuSpeed(long cpuSpeed) {
+            this.cpuSpeed = cpuSpeed;
+        }
+
+        public List<String> getBootDev() {
+            return bootDev;
+        }
+
+        public void setBootDev(List<String> bootDev) {
+            this.bootDev = bootDev;
+        }
 
         public IsoTO getBootIso() {
             return bootIso;
@@ -528,56 +641,31 @@ public class KVMAgentCommands {
             this.useVirtio = useVirtio;
         }
 
-        public String getVmUuid() {
-			return vmInstanceUuid;
-		}
-		public void setVmUuid(String vmInstanceUuid) {
-			this.vmInstanceUuid = vmInstanceUuid;
-		}
-		public String getVmName() {
-			return vmName;
-		}
-		public void setVmName(String vmName) {
-			this.vmName = vmName;
-		}
-		public long getMemory() {
-			return memory;
-		}
-		public void setMemory(long memory) {
-			this.memory = memory;
-		}
-		
-		public int getCpuNum() {
-			return cpuNum;
-		}
-		public void setCpuNum(int cpuNum) {
-			this.cpuNum = cpuNum;
-		}
-		public long getCpuSpeed() {
-			return cpuSpeed;
-		}
-		public void setCpuSpeed(long cpuSpeed) {
-			this.cpuSpeed = cpuSpeed;
-		}
-		public String getBootDev() {
-			return bootDev;
-		}
-		public void setBootDev(String bootDev) {
-			this.bootDev = bootDev;
-		}
         public String getConsoleMode() {
             return consoleMode;
         }
+
         public void setConsoleMode(String consoleMode) {
             this.consoleMode = consoleMode;
         }
-        public boolean getNestedVirtualization() {
+
+        public String getNestedVirtualization() {
             return nestedVirtualization;
         }
-        public void setNestedVirtualization(boolean nestedVirtualization) {
+
+        public void setNestedVirtualization(String nestedVirtualization) {
             this.nestedVirtualization = nestedVirtualization;
         }
-		public VolumeTO getRootVolume() {
+
+        public String getHostManagementIp() {
+            return hostManagementIp;
+        }
+
+        public void setHostManagementIp(String hostManagementIp) {
+            this.hostManagementIp = hostManagementIp;
+        }
+
+        public VolumeTO getRootVolume() {
             return rootVolume;
         }
         public void setRootVolume(VolumeTO rootVolume) {
@@ -675,8 +763,17 @@ public class KVMAgentCommands {
     public static class RebootVmCmd extends AgentCommand {
     	private String uuid;
     	private long timeout;
+        private List<String> bootDev;
 
-		public String getUuid() {
+        public List<String> getBootDev() {
+            return bootDev;
+        }
+
+        public void setBootDev(List<String> bootDev) {
+            this.bootDev = bootDev;
+        }
+
+        public String getUuid() {
 			return uuid;
 		}
 		public void setUuid(String uuid) {
@@ -759,6 +856,24 @@ public class KVMAgentCommands {
     public static class MigrateVmCmd extends AgentCommand {
         private String vmUuid;
         private String destHostIp;
+        private String storageMigrationPolicy;
+        private String srcHostIp;
+
+        public String getSrcHostIp() {
+            return srcHostIp;
+        }
+
+        public void setSrcHostIp(String srcHostIp) {
+            this.srcHostIp = srcHostIp;
+        }
+
+        public String getStorageMigrationPolicy() {
+            return storageMigrationPolicy;
+        }
+
+        public void setStorageMigrationPolicy(String storageMigrationPolicy) {
+            this.storageMigrationPolicy = storageMigrationPolicy;
+        }
 
         public String getVmUuid() {
             return vmUuid;
@@ -994,5 +1109,33 @@ public class KVMAgentCommands {
     }
 
     public static class LoginIscsiTargetRsp extends AgentResponse {
+    }
+
+    public static class AttachIsoCmd extends AgentCommand {
+        public IsoTO iso;
+        public String vmUuid;
+    }
+
+    public static class AttachIsoRsp extends AgentResponse {
+    }
+
+    public static class DetachIsoCmd extends AgentCommand {
+        public String vmUuid;
+        public String isoUuid;
+    }
+
+    public static class DetachIsoRsp extends AgentResponse {
+
+    }
+
+    public static class ReportVmStateCmd {
+        public String hostUuid;
+        public String vmUuid;
+        public String vmState;
+    }
+
+    public static class ReconnectMeCmd {
+        public String hostUuid;
+        public String reason;
     }
 }
